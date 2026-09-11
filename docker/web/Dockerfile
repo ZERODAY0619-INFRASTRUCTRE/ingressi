@@ -32,9 +32,9 @@ COPY public ./public
 COPY scripts ./scripts
 COPY tests ./tests
 COPY drizzle ./drizzle
-# Separate mutable caches for the two applications; persist both Turbopack and
+# Share the web build for both runtime profiles; persist Turbopack and
 # Next.js incremental TypeScript data without shipping the cache in the image.
-ARG BUILD_CACHE_SCOPE=pcpm
+ARG BUILD_CACHE_SCOPE=shared
 RUN --mount=type=cache,id=cpm-next-${BUILD_CACHE_SCOPE},target=/app/.next/cache,sharing=locked \
     bun run build && rm -f /tmp/build.db /tmp/build.db-shm /tmp/build.db-wal
 
