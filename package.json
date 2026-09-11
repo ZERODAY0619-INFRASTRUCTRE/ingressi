@@ -1,6 +1,6 @@
 {
   "name": "caddy-proxy-manager",
-  "version": "1.0.0",
+  "version": "1.11.2",
   "description": "Caddy Proxy Manager - web UI for managing Caddy reverse proxies with OAuth2 authentication.",
   "private": true,
   "scripts": {

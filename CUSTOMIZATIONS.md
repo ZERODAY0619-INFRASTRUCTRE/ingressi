@@ -1,7 +1,9 @@
 # TOMORI 공통 앱
 
 ICPM과 PCPM은 이 소스의 동일한 웹/Caddy 이미지를 사용한다. 배포 설정은 별도 infra 저장소에 둔다.
-원본 기준: f125793470bf99f19439018edf2a272ebffc4b65 (기존 PCPM HEAD).
+원본 기준: v1.11.2 / 7e5791750e5f6bbd8444ed62c680b8df8ed7c05d.
+원본 저장소: https://github.com/fuomag9/caddy-proxy-manager.git
+기존 공통 앱 기준: f125793470bf99f19439018edf2a272ebffc4b65 (이전 PCPM HEAD).
 기존 ICPM 기준 f6ff473ac19c5fdb7ab85d5c74588b7263330ff9는 이 커밋의 조상이다.
 
 - 공통: TOMORI UI, 상태/점검 화면, 오류 피드백, OAuth 역할 동기화, 분석/GeoIP, Authentik HTTP/HTTPS 포트·TLS 수정.
@@ -18,3 +20,6 @@ custom/main의 커스텀 이력은 보존한다. upstream에는 push하지 않�
 
 검증 런타임은 Bun 1.4.2, Node 24다. Vitest 5와 better-sqlite3 13의 Node 요구조건을 준수한다.
 웹 빌드는 `bun --bun run build`로 실행해 운영 Bun SQLite 경로를 검증한다.
+
+`package.json`의 version은 통합한 upstream 릴리스에 맞춘다. 기본 웹 빌드는 v1.11.2를 표시하며,
+infra 이미지 빌드는 `1.11.2+tomori.<commit>`을 전달해 커스텀 빌드를 구분한다.
