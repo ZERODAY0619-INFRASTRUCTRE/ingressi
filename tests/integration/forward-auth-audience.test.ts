@@ -200,15 +200,23 @@ describe('forward-auth exact audience binding', () => {
   });
 });
 
+const browserNonce = 'a'.repeat(64);
+function browserHeaders(origin: string): Headers {
+  const headers = new Headers(proxyHeaders(origin));
+  headers.set('cookie', `_cpm_fa_nonce=${browserNonce}`);
+  return headers;
+}
+
 describe('trusted Caddy callback boundary', () => {
   it('rejects direct-origin requests even when forwarded host/protocol are forged', async () => {
     const { user } = await setupAuthorizedWildcard();
     const { rawCode } = await createCode(user.id, 'https://private.example.com/');
 
-    const directRequest = new NextRequest(`http://localhost:3000/api/forward-auth/callback?code=${rawCode}`, {
+    const directRequest = new NextRequest(`http://localhost:3000/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: {
         'x-forwarded-proto': 'https',
         'x-forwarded-host': 'private.example.com',
+        cookie: `_cpm_fa_nonce=${browserNonce}`,
       },
     });
     const response = await forwardAuthCallback(directRequest);
@@ -223,13 +231,13 @@ describe('trusted Caddy callback boundary', () => {
     const target = 'https://private.example.com/dashboard';
     const { rawCode } = await createCode(user.id, target);
 
-    const attackerRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
-      headers: proxyHeaders('https://evil.example.com'),
+    const attackerRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
+      headers: browserHeaders('https://evil.example.com'),
     });
     expect((await forwardAuthCallback(attackerRequest)).status).toBe(401);
 
-    const legitimateRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
-      headers: proxyHeaders('https://private.example.com'),
+    const legitimateRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
+      headers: browserHeaders('https://private.example.com'),
     });
     const response = await forwardAuthCallback(legitimateRequest);
     expect(response.status).toBe(302);

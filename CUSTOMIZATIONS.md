@@ -15,3 +15,6 @@ ICPM과 PCPM은 이 소스의 동일한 웹/Caddy 이미지를 사용한다. 배
 원본 갱신은 별도 update 브랜치에서 upstream 커밋을 병합하고 검증한다.
 custom/main의 커스텀 이력은 보존한다. upstream에는 push하지 않는다.
 빌드/배포 방법과 버전 고정은 infra 저장소 docs/UPDATE.ko.md를 따른다.
+
+검증 런타임은 Bun 1.4.2, Node 24다. Vitest 5와 better-sqlite3 13의 Node 요구조건을 준수한다.
+웹 빌드는 `bun --bun run build`로 실행해 운영 Bun SQLite 경로를 검증한다.
