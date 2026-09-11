@@ -10,7 +10,7 @@ ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /build
-COPY docker/caddy/go.mod docker/caddy/go.sum docker/caddy/build.sh docker/caddy/update-compatibility-pins.sh ./
+COPY docker/caddy/go.mod docker/caddy/go.sum docker/caddy/update-compatibility-pins.sh ./
 
 # Every module version comes from go.mod. Dependabot updates that file weekly;
 # the compatibility updater derives cel-go from the pinned Caddy release, and
@@ -18,6 +18,8 @@ COPY docker/caddy/go.mod docker/caddy/go.sum docker/caddy/build.sh docker/caddy/
 RUN sh ./update-compatibility-pins.sh
 RUN XCADDY_VERSION="$(go list -m -f '{{.Version}}' github.com/caddyserver/xcaddy)" && \
     go install github.com/caddyserver/xcaddy/cmd/xcaddy@"${XCADDY_VERSION}"
+# Build-script changes reuse the resolved modules and xcaddy installation above.
+COPY docker/caddy/build.sh ./
 RUN sh ./build.sh
 
 FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
