@@ -33,7 +33,7 @@ export function DnsResolverFields({
           />
         </div>
 
-        <div className={cn(
+        <div inert={!enabled} className={cn(
           "overflow-hidden transition-all duration-200",
           enabled ? "max-h-[1000px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
         )}>

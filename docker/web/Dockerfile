@@ -11,9 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json bun.lock ./
 # --ignore-scripts skips native addon compilation (better-sqlite3 is a test-only devDep;
 # production uses bun's built-in bun:sqlite which needs no compilation)
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=cache,id=cpm-bun-install,target=/root/.bun/install/cache,sharing=locked \
+    bun install --frozen-lockfile --ignore-scripts
 
-FROM base AS builder
+FROM deps AS builder
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_PATH=/tmp/build.db
@@ -22,9 +23,20 @@ ENV DATABASE_URL=file:/tmp/build.db
 # Set by CI to the git tag (without the leading v) for release builds; when
 # unset, next.config.mjs falls back to the package.json version.
 ARG APP_VERSION
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-RUN bun run build && rm -f /tmp/build.db
+# Copy only web build inputs. Documentation, CI and Caddy changes do not
+# invalidate the application build. Tests remain included for TypeScript checks.
+COPY package.json bun.lock next.config.mjs next-env.d.ts postcss.config.mjs tsconfig.json proxy.ts drizzle.config.ts ./
+COPY app ./app
+COPY src ./src
+COPY public ./public
+COPY scripts ./scripts
+COPY tests ./tests
+COPY drizzle ./drizzle
+# Separate mutable caches for the two applications; persist both Turbopack and
+# Next.js incremental TypeScript data without shipping the cache in the image.
+ARG BUILD_CACHE_SCOPE=pcpm
+RUN --mount=type=cache,id=cpm-next-${BUILD_CACHE_SCOPE},target=/app/.next/cache,sharing=locked \
+    bun run build && rm -f /tmp/build.db /tmp/build.db-shm /tmp/build.db-wal
 
 FROM base AS runner
 ARG PUID=10001
@@ -49,7 +61,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/server/instrumentation ./.n
 COPY --from=builder --chown=nextjs:nodejs /app/.next/server/chunks/ ./.next/server/chunks/
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
 
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+RUN mkdir -p /app/data /app/feedback && chown -R nextjs:nodejs /app/data /app/feedback
 
 # Shared volume for the custom ACME CA root PEM (issue #192). The web container
 # writes it here; Caddy mounts the same volume read-only. Mode 0777 so it stays

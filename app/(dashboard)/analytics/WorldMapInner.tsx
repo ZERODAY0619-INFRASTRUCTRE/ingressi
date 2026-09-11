@@ -293,7 +293,7 @@ export default function WorldMapInner({ data, selectedCountry }: { data: Country
         .wm-popup .maplibregl-popup-tip { display: none !important; }
       `}</style>
 
-      <div className="rounded-lg overflow-hidden border border-white/[0.08] flex-1 min-h-[280px] min-w-[400px] w-full">
+      <div className="rounded-lg overflow-hidden border border-white/[0.08] flex-1 min-h-[280px] min-w-0 w-full">
         <MapGL
           mapStyle={MAP_STYLE}
           initialViewState={{

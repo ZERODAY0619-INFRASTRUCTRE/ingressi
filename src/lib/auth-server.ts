@@ -8,6 +8,7 @@ import { decryptSecret, encryptSecret, isEncryptedSecret } from "./secret";
 import type { OAuthProvider } from "./models/oauth-providers";
 import type { GenericOAuthConfig } from "better-auth/plugins";
 import { resolveOAuthAccountIssuer } from "./account-issuer";
+import { syncOAuthRoleFromClaims } from "./services/oauth-role-sync";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let cachedAuth: any = null;
@@ -214,6 +215,7 @@ function createAuth(): any {
             return { data };
           },
           after: async (account) => {
+            await syncOAuthRoleFromClaims(account);
             // Better Auth writes federated identities to the `accounts` table
             // only. Re-derive the informational users.provider/subject columns
             // from it so auto-linking, profile linking, and federated sign-up
@@ -239,6 +241,7 @@ function createAuth(): any {
             return { data };
           },
           after: async (account) => {
+            await syncOAuthRoleFromClaims(account);
             // Repeat OAuth sign-ins update the existing account row rather than
             // creating one; keep the projection fresh in that path too.
             try {

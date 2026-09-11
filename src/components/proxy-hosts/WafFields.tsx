@@ -74,7 +74,7 @@ export function WafFields({ value, showModeSelector = true }: Props) {
       </div>
 
       {/* Expanded content */}
-      <div className={cn(
+      <div inert={!enabled} className={cn(
         "overflow-hidden transition-all duration-200",
         enabled ? "max-h-[3000px] opacity-100 mt-4" : "max-h-0 opacity-0 pointer-events-none"
       )}>
@@ -249,7 +249,7 @@ export function WafFields({ value, showModeSelector = true }: Props) {
               showTemplates && "rotate-180"
             )} />
           </Button>
-          <div className={cn(
+          <div inert={!showTemplates} className={cn(
             "overflow-hidden transition-all duration-200",
             showTemplates ? "max-h-[500px] opacity-100 mt-2" : "max-h-0 opacity-0 pointer-events-none"
           )}>

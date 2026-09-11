@@ -114,7 +114,7 @@ export function MtlsFields({ value, caCertificates, issuedClientCerts = [], prox
         <Switch checked={enabled} onCheckedChange={setEnabled} className="shrink-0" />
       </div>
 
-      <div className={cn(
+      <div inert={!enabled} className={cn(
         "overflow-hidden transition-all duration-200",
         enabled ? "max-h-[4000px] opacity-100 mt-4" : "max-h-0 opacity-0 pointer-events-none"
       )}>

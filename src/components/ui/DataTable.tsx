@@ -61,6 +61,7 @@ function PaginationBar({ page, perPage, total }: { page: number; perPage: number
         variant="outline"
         size="icon"
         onClick={() => goTo(page - 1)}
+        aria-label="Previous page"
         disabled={page <= 1}
       >
         <ChevronLeft className="h-4 w-4" />
@@ -72,6 +73,7 @@ function PaginationBar({ page, perPage, total }: { page: number; perPage: number
         variant="outline"
         size="icon"
         onClick={() => goTo(page + 1)}
+        aria-label="Next page"
         disabled={page >= pageCount}
       >
         <ChevronRight className="h-4 w-4" />

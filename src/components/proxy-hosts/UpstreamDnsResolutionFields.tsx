@@ -61,7 +61,7 @@ export function UpstreamDnsResolutionFields({
           </Button>
         </div>
 
-        <div className={cn(
+        <div inert={!expanded} className={cn(
           "overflow-hidden transition-all duration-200",
           expanded ? "max-h-[600px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
         )}>

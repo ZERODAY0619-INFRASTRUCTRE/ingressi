@@ -427,7 +427,7 @@ function SettingsTab({
             value={desc}
             onChange={(e) => setDesc(e.target.value)}
             placeholder="What is this list for? Who manages it?"
-            className="flex min-h-[88px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+            className="flex min-h-[88px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
           />
         </div>
         <div className="flex items-center gap-2 pt-1">
@@ -844,7 +844,7 @@ function ListsRail({
   ];
 
   return (
-    <div className="flex flex-col w-[320px] shrink-0 border-r border-border bg-card">
+    <div className="flex flex-col w-full lg:w-[320px] max-h-[45dvh] lg:max-h-none shrink-0 border-b lg:border-b-0 lg:border-r border-border bg-card">
       {/* Header */}
       <div className="px-4 pt-4 pb-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
@@ -1004,7 +1004,7 @@ export default function AccessListsClient({ lists: initialLists, usage: initialU
   return (
     <>
       {/* Split layout: rail + detail — break out of parent padding to fill width */}
-      <div className="flex h-[calc(100vh-48px)] md:h-screen border-t md:border-t-0">
+      <div className="flex flex-col lg:flex-row min-h-[calc(100dvh-56px)] lg:h-dvh border-t lg:border-t-0">
         <ListsRail
           lists={lists}
           selectedId={selectedId}

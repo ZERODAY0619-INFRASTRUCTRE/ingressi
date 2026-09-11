@@ -79,7 +79,7 @@ export default function GroupsClient({ groups, users }: Props) {
               }}
               className="flex flex-col gap-3"
             >
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="name">Name</Label>
                   <Input id="name" name="name" placeholder="e.g. Developers" required />

@@ -52,7 +52,7 @@ export function StatusSummaryBar({ expired, expiringSoon, healthy, filter, onFil
         active={filter === "expired"}
         onClick={() => toggle("expired")}
         base="border-rose-500/30 bg-rose-500/5 text-rose-600 dark:text-rose-400 hover:bg-rose-500/15"
-        activeStyle="border-rose-500 bg-rose-500 text-white shadow-[0_0_12px_rgba(244,63,94,0.3)]"
+        activeStyle="border-rose-500 bg-rose-500 text-white"
       />
       <StatChip
         icon={<Clock className="h-4 w-4" />}
@@ -61,7 +61,7 @@ export function StatusSummaryBar({ expired, expiringSoon, healthy, filter, onFil
         active={filter === "expiring_soon"}
         onClick={() => toggle("expiring_soon")}
         base="border-amber-500/30 bg-amber-500/5 text-amber-600 dark:text-amber-400 hover:bg-amber-500/15"
-        activeStyle="border-amber-500 bg-amber-500 text-white shadow-[0_0_12px_rgba(245,158,11,0.3)]"
+        activeStyle="border-amber-500 bg-amber-500 text-white"
       />
       <StatChip
         icon={<CheckCircle2 className="h-4 w-4" />}
@@ -70,7 +70,7 @@ export function StatusSummaryBar({ expired, expiringSoon, healthy, filter, onFil
         active={filter === "ok"}
         onClick={() => toggle("ok")}
         base="border-emerald-500/30 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15"
-        activeStyle="border-emerald-500 bg-emerald-500 text-white shadow-[0_0_12px_rgba(16,185,129,0.3)]"
+        activeStyle="border-emerald-500 bg-emerald-500 text-white"
       />
     </div>
   );

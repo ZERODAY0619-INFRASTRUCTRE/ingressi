@@ -69,7 +69,7 @@ export function LocationLoadBalancerFields({ value, onChange }: Props) {
         <Switch checked={enabled} onCheckedChange={(on) => onChange(on ? { ...(lb ?? EMPTY_LOAD_BALANCER), enabled: true } : null)} />
       </div>
 
-      <div className={cn("overflow-hidden transition-all duration-200", enabled ? "mt-3 max-h-[3000px] opacity-100" : "max-h-0 opacity-0 pointer-events-none")}>
+      <div inert={!enabled} className={cn("overflow-hidden transition-all duration-200", enabled ? "mt-3 max-h-[3000px] opacity-100" : "max-h-0 opacity-0 pointer-events-none")}>
         <div className="flex flex-col gap-4">
           <div>
             <label className="text-xs font-medium mb-1 block">Selection Policy</label>

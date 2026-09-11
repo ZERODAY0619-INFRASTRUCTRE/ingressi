@@ -69,9 +69,9 @@ export function CpmForwardAuthFields({
             <div className="flex flex-col gap-4">
                 <div className="flex flex-row items-center justify-between">
                     <div>
-                        <p className="text-sm font-semibold">CPM Forward Auth</p>
+                        <p className="text-sm font-semibold">TOMORI Forward Auth</p>
                         <p className="text-sm text-muted-foreground">
-                            Require users to authenticate via Caddy Proxy Manager before accessing this host
+                            Require users to authenticate via TOMORI before accessing this host
                         </p>
                     </div>
                     <Switch
@@ -81,7 +81,7 @@ export function CpmForwardAuthFields({
                     />
                 </div>
 
-                <div className={cn(
+                <div inert={!enabled} className={cn(
                     "overflow-hidden transition-all duration-200",
                     enabled ? "max-h-[3000px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
                 )}>

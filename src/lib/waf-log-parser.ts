@@ -1,3 +1,4 @@
+import { resolveAnalyticsGeo } from './analytics-geo';
 import { existsSync, statSync, truncateSync } from 'node:fs';
 import maxmind, { CountryResponse } from 'maxmind';
 import db from './db';
@@ -207,7 +208,7 @@ export function parseLine(line: string, ruleMap: Map<string, RuleInfo>): WafEven
     ts,
     host,
     client_ip: clientIp,
-    country_code: lookupCountry(clientIp),
+    ...resolveAnalyticsGeo(clientIp, ts, lookupCountry),
     method: req.method ?? '',
     uri: req.uri ?? '',
     rule_id: ruleInfo?.ruleId ?? null,

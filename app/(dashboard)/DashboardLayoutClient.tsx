@@ -1,6 +1,9 @@
 "use client";
 
 import { ReactNode, useState } from "react";
+import { APP_NAME } from "@/src/lib/branding";
+import { SystemHeader } from "@/src/components/SystemHeader";
+import { SystemBrand } from "@/src/components/SystemBrand";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -9,7 +12,7 @@ import {
   ShieldOff, BarChart2, History, Settings, LogOut, Menu, Sun, Moon,
   FileJson2, Users, UserCog,
 } from "lucide-react";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
@@ -66,18 +69,7 @@ function NavContent({ pathname, user, onNavigate }: {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Logo */}
-      <div className="px-4 py-5 flex items-center gap-2">
-        <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center shrink-0">
-          <span className="text-primary-foreground font-bold text-xs">C</span>
-        </div>
-        <div className="flex flex-col leading-tight min-w-0">
-          <p className="font-semibold text-sm tracking-tight">Caddy Proxy Manager</p>
-          <span className="text-[11px] text-muted-foreground" title="Application version">
-            {formatAppVersion()}
-          </span>
-        </div>
-      </div>
+      <div className="eva-sidebar-brand"><SystemBrand /><p className="eva-build-label" aria-label="Application version"> {formatAppVersion()}</p></div>
       <Separator />
 
       {/* Nav items */}
@@ -98,9 +90,9 @@ function NavContent({ pathname, user, onNavigate }: {
                 asChild
                 onClick={onNavigate}
               >
-                <Link href={href}>
+                <Link href={href} aria-current={active ? "page" : undefined}>
                   <Icon className="h-4 w-4 shrink-0" />
-                  {label}
+                  {label}<span className="eva-nav-index" aria-hidden="true">{String(NAV_ITEMS.findIndex(item => item.href === href) + 1).padStart(2, "0")}</span>
                 </Link>
               </Button>
             );
@@ -136,7 +128,7 @@ function NavContent({ pathname, user, onNavigate }: {
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                title="Sign Out"
+                title="Sign Out" aria-label="Sign Out"
               >
                 <LogOut className="h-4 w-4" />
               </Button>
@@ -156,16 +148,16 @@ export default function DashboardLayoutClient({ user, children }: { user: User; 
   return (
     <div className="flex min-h-screen">
       {/* Desktop sidebar — fixed, hidden on mobile */}
-      <aside className="hidden md:flex flex-col fixed inset-y-0 left-0 w-64 border-r border-border bg-card z-30">
+      <aside className="hidden min-[834px]:flex flex-col fixed inset-y-0 left-0 w-64 border-r border-border app-navigation z-30">
         <NavContent pathname={pathname} user={user} />
       </aside>
 
       {/* Mobile top bar */}
-      <header className="md:hidden fixed top-0 inset-x-0 h-12 flex items-center justify-between px-4 border-b border-border bg-card z-40">
+      <header className="min-[834px]:hidden mobile-topbar fixed top-0 inset-x-0 h-12 flex items-center justify-between px-4 border-b border-border app-navigation z-40">
         <Button variant="ghost" size="icon" aria-label="Open navigation" onClick={() => setMobileOpen(true)}>
           <Menu className="h-5 w-5" />
         </Button>
-        <span className="font-semibold text-sm">Caddy Proxy Manager</span>
+        <span className="eva-mobile-title" aria-label={APP_NAME}>{APP_NAME}</span>
         <div className="flex items-center gap-1">
           <ThemeToggle />
           <Button variant="ghost" size="icon" aria-label="Go to profile" onClick={() => router.push("/profile")}>
@@ -181,17 +173,19 @@ export default function DashboardLayoutClient({ user, children }: { user: User; 
 
       {/* Mobile Sheet drawer */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="left" className="w-64 sm:max-w-[256px] p-0">
+        <SheetContent side="left" className="app-navigation w-[min(320px,100vw)] sm:max-w-[320px] p-0">
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
           <NavContent pathname={pathname} user={user} onNavigate={() => setMobileOpen(false)} />
         </SheetContent>
       </Sheet>
 
       {/* Main content */}
-      <main className="flex-1 md:ml-64 mt-12 md:mt-0 overflow-x-hidden">
+      <main className="dashboard-main flex-1 min-[834px]:ml-64 min-[834px]:mt-0">
+        <SystemHeader section={NAV_ITEMS.find(item => item.href === pathname)?.label ?? "Account"} sectionNumber={String(NAV_ITEMS.findIndex(item => item.href === pathname) >= 0 ? NAV_ITEMS.findIndex(item => item.href === pathname) + 1 : 13).padStart(2, "0")} />
         {pathname === "/settings" || pathname === "/access-lists" ? (
           children
         ) : (
-          <div className="max-w-screen-xl mx-auto px-4 md:px-8 py-6">
+          <div className="dashboard-content">
             {children}
           </div>
         )}

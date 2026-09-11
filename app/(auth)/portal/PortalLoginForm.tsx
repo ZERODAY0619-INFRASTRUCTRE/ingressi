@@ -1,5 +1,7 @@
 "use client";
 
+import { SystemHeader } from "@/src/components/SystemHeader";
+
 import { FormEvent, useEffect, useState } from "react";
 import { Shield } from "lucide-react";
 import { authClient } from "@/src/lib/auth-client";
@@ -104,9 +106,9 @@ export default function PortalLoginForm({
 
   if (!hasRedirect) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-4">
-        <Card className="w-full max-w-sm">
-          <CardHeader className="text-center space-y-1">
+      <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
+        <Card className="eva-auth-compact">
+          <SystemHeader login /><CardHeader className="text-center space-y-1">
             <CardTitle className="text-xl">Authentication Required</CardTitle>
             <CardDescription>No redirect destination specified.</CardDescription>
           </CardHeader>
@@ -118,9 +120,9 @@ export default function PortalLoginForm({
   // If we have a session and are auto-redirecting, show a loading state
   if (existingSession && pending && !error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-4">
-        <Card className="w-full max-w-sm">
-          <CardHeader className="text-center space-y-1">
+      <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
+        <Card className="eva-auth-compact">
+          <SystemHeader login /><CardHeader className="text-center space-y-1">
             <div className="flex justify-center mb-2">
               <Shield className="h-8 w-8 text-muted-foreground" />
             </div>
@@ -135,9 +137,9 @@ export default function PortalLoginForm({
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center space-y-1">
+    <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
+      <Card className="eva-auth-compact">
+        <SystemHeader login /><CardHeader className="text-center space-y-1">
           <div className="flex justify-center mb-2">
             <Shield className="h-8 w-8 text-muted-foreground" />
           </div>

@@ -1,5 +1,7 @@
 "use client";
 
+import { SystemHeader } from "@/src/components/SystemHeader";
+
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { authClient } from "@/src/lib/auth-client";
@@ -76,10 +78,10 @@ export default function LoginClient({ enabledProviders = [] }: LoginClientProps)
   const disabled = loginPending || !!oauthPending;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center space-y-1">
-          <CardTitle className="text-2xl font-bold">Caddy Proxy Manager</CardTitle>
+    <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
+      <div className="eva-auth-layout"><SystemHeader login /><Card className="eva-auth-form">
+        <CardHeader className="space-y-1">
+          <CardTitle className="eva-form-title">Operator authentication</CardTitle>
           <CardDescription>
             {enabledProviders.length > 0
               ? "Sign in to your account"
@@ -118,7 +120,7 @@ export default function LoginClient({ enabledProviders = [] }: LoginClientProps)
               </div>
               <div className="relative">
                 <Separator />
-                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-xs text-muted-foreground">
+                <span className="eva-auth-divider">
                   Or sign in with credentials
                 </span>
               </div>
@@ -164,7 +166,7 @@ export default function LoginClient({ enabledProviders = [] }: LoginClientProps)
             {formatAppVersion()}
           </p>
         </CardContent>
-      </Card>
+      </Card></div>
     </div>
   );
 }

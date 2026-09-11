@@ -238,6 +238,16 @@ export async function removeAccessListEntry(accessListId: number, entryId: numbe
     throw new Error("Access list not found");
   }
 
+  const remaining = await db.query.accessListEntries.findFirst({
+    where: (table, operators) => operators.and(
+      operators.eq(table.accessListId, accessListId),
+      operators.ne(table.id, entryId)
+    )
+  });
+  if (!remaining) {
+    throw new Error("An access list assigned to a host must retain at least one account");
+  }
+
   await db.delete(accessListEntries).where(eq(accessListEntries.id, entryId));
 
   logAuditEvent({

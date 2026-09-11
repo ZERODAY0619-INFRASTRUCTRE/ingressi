@@ -49,7 +49,7 @@ export function LoadBalancerFields({
           />
         </div>
 
-        <div className={cn(
+        <div inert={!enabled} className={cn(
           "overflow-hidden transition-all duration-200",
           enabled ? "max-h-[3000px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
         )}>
@@ -73,7 +73,7 @@ export function LoadBalancerFields({
             </div>
 
             {/* Header-based policy fields */}
-            <div className={cn(
+            <div inert={!showHeaderField} className={cn(
               "overflow-hidden transition-all duration-200",
               showHeaderField ? "max-h-[200px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
             )}>
@@ -90,7 +90,7 @@ export function LoadBalancerFields({
             </div>
 
             {/* Cookie-based policy fields */}
-            <div className={cn(
+            <div inert={!showCookieFields} className={cn(
               "overflow-hidden transition-all duration-200",
               showCookieFields ? "max-h-[300px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
             )}>
@@ -172,7 +172,7 @@ export function LoadBalancerFields({
                   </div>
                 </div>
 
-                <div className={cn(
+                <div inert={!activeHealthEnabled} className={cn(
                   "overflow-hidden transition-all duration-200",
                   activeHealthEnabled ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
                 )}>
@@ -234,7 +234,7 @@ export function LoadBalancerFields({
                   </div>
                 </div>
 
-                <div className={cn(
+                <div inert={!passiveHealthEnabled} className={cn(
                   "overflow-hidden transition-all duration-200",
                   passiveHealthEnabled ? "max-h-[400px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
                 )}>

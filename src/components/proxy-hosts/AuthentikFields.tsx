@@ -134,7 +134,7 @@ export function AuthentikFields({
                     />
                 </div>
 
-                <div className={cn(
+                <div inert={!enabled} className={cn(
                     "overflow-hidden transition-all duration-200",
                     enabled ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
                 )}>
@@ -149,12 +149,13 @@ export function AuthentikFields({
                                 required={enabled}
                                 disabled={!enabled}
                             />
+                            <p className="text-xs text-muted-foreground mt-1">Use outpost.goauthentik.io here. Enter your Authentik server URL in Outpost Upstream URL below.</p>
                         </div>
                         <div>
                             <label className="text-sm font-medium mb-1 block">Outpost Upstream URL</label>
                             <Input
                                 name="authentikOutpostUpstream"
-                                placeholder="https://outpost.internal:9000"
+                                placeholder="http://authentik-server:9000"
                                 value={outpostUpstream}
                                 onChange={(event) => setOutpostUpstream(event.target.value)}
                                 required={enabled}

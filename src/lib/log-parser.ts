@@ -1,3 +1,4 @@
+import { resolveAnalyticsGeo } from './analytics-geo';
 import { existsSync, statSync } from 'node:fs';
 import maxmind, { CountryResponse } from 'maxmind';
 import db from './db';
@@ -157,7 +158,7 @@ export function parseLine(line: string, blocked: BlockedSignatures): TrafficEven
   return {
     ts,
     client_ip: clientIp,
-    country_code: clientIp ? lookupCountry(clientIp) : null,
+    ...resolveAnalyticsGeo(clientIp, ts, lookupCountry),
     host: req.host ?? '',
     method,
     uri,

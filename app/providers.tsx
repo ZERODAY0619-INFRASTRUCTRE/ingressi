@@ -7,7 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 export default function Providers({ children, nonce }: { children: ReactNode; nonce?: string }) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange nonce={nonce}>
+    <ThemeProvider attribute="class" defaultTheme="dark" storageKey="cpm-nerv-theme" enableSystem disableTransitionOnChange nonce={nonce}>
       <TooltipProvider>
         {children}
       </TooltipProvider>

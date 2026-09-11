@@ -869,6 +869,11 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
     }
   }
 
+  const scopedMtls = Boolean(normalized.mtls?.protected_paths?.length || normalized.mtls?.excluded_paths?.length);
+  if (scopedMtls && normalized.cpm_forward_auth?.enabled) {
+    throw new ApiValidationError("Scoped mTLS cannot be combined with forward authentication until both checks are composed");
+  }
+
   return Object.keys(normalized).length > 0 ? JSON.stringify(normalized) : null;
 }
 
@@ -1182,6 +1187,10 @@ function normalizeAuthentikInput(
     } else {
       delete next.excluded_paths;
     }
+  }
+
+  if (next.enabled && next.outpost_domain && /[:/\s{}]/.test(next.outpost_domain)) {
+    throw new Error("Outpost Domain must be a path namespace such as outpost.goauthentik.io, not an SSO URL. Put the server URL in Outpost Upstream URL.");
   }
 
   if ((next.enabled ?? false) && next.outpost_domain && !next.auth_endpoint) {

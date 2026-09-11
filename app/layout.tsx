@@ -1,4 +1,10 @@
 import type { ReactNode } from "react";
+import { APP_NAME, APP_FULL_NAME } from "@/src/lib/branding";
+import type { Metadata, Viewport } from "next";
+
+export const metadata: Metadata = { title: APP_NAME, description: APP_FULL_NAME };
+
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };
 import { headers } from "next/headers";
 import "./globals.css";
 import Providers from "./providers";

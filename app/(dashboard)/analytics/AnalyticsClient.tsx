@@ -465,7 +465,7 @@ export default function AnalyticsClient() {
   const timelineOptions: ApexOptions = {
     ...DARK_CHART,
     chart: { ...DARK_CHART.chart, type: 'area', stacked: false, id: 'timeline' },
-    colors: ['#3b82f6', '#ef4444'],
+    colors: ['#d7ae55', '#ef4444'],
     fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.45, opacityTo: 0.05 } },
     stroke: { curve: 'smooth', width: 2 },
     dataLabels: { enabled: false },
@@ -482,7 +482,7 @@ export default function AnalyticsClient() {
   const donutOptions: ApexOptions = {
     ...DARK_CHART,
     chart: { ...DARK_CHART.chart, type: 'donut', id: 'protocols' },
-    colors: ['#3b82f6', '#8b5cf6', '#06b6d4', '#f59e0b'],
+    colors: ['#d7ae55', '#9bb977', '#b5bca7', '#f59e0b'],
     labels: protocols.map(p => p.proto),
     legend: { position: 'bottom', labels: { colors: '#94a3b8' } },
     dataLabels: { style: { colors: ['#fff'] } },
@@ -494,7 +494,7 @@ export default function AnalyticsClient() {
   const barOptions: ApexOptions = {
     ...DARK_CHART,
     chart: { ...DARK_CHART.chart, type: 'bar', id: 'ua' },
-    colors: ['#7f5bff'],
+    colors: ['#9bb977'],
     plotOptions: { bar: { horizontal: true, borderRadius: 4 } },
     dataLabels: { enabled: false },
     xaxis: { categories: uaNames, labels: { style: { colors: '#94a3b8', fontSize: '12px' } } },
@@ -530,7 +530,7 @@ export default function AnalyticsClient() {
         </div>
         <div className="flex flex-row items-center gap-3 flex-wrap">
           {/* Interval toggle group */}
-          <div className="flex items-center rounded-md border border-input p-0.5 gap-0.5">
+          <div className="flex flex-wrap max-w-full items-center rounded-none border border-input p-0.5 gap-0.5">
             {INTERVALS.map(iv => (
               <Button
                 key={iv}
@@ -655,6 +655,7 @@ export default function AnalyticsClient() {
             </div>
             <div className="rounded-lg border border-white/[0.12] p-4">
               <p className="text-sm font-semibold mb-3">Top Countries</p>
+              <p className="text-xs text-muted-foreground mb-3">Countries are IP-based estimates. Tailscale traffic may use an observed public endpoint; unavailable locations remain unknown.</p>
               {countries.length === 0 ? (
                 <div className="py-8 text-center text-muted-foreground text-sm">No geo data available</div>
               ) : (

@@ -1,3 +1,7 @@
+import { caddyStatusRoute, defaultErrorRoutes, feedbackProxyRoute } from "./caddy-status";
+import { maintenanceEnabled, upstreamErrorResponses } from "./status-pages";
+import { buildAnubisGate } from "./caddy-anubis";
+import { buildAuthentikUpstream } from "./caddy-authentik";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { Resolver } from "node:dns/promises";
 import { join, dirname } from "node:path";
@@ -769,6 +773,7 @@ export function buildLocationReverseProxy(
   const reverseProxyHandler: Record<string, unknown> = {
     handler: "reverse_proxy",
     upstreams: parsedTargets.map((t) => ({ dial: t.dial })),
+    handle_response: upstreamErrorResponses(),
   };
 
   if (preserveHostHeader) {
@@ -1010,6 +1015,14 @@ async function buildProxyRoutes(
             }
           }
         });
+      } else {
+        // An assigned but empty access list is a revoked policy, not a public route.
+        // Fail closed before the backend handler can run.
+        handlers.push({
+          handler: "static_response",
+          status_code: 403,
+          body: "Access denied"
+        });
       }
     }
 
@@ -1030,30 +1043,16 @@ async function buildProxyRoutes(
 
     const reverseProxyHandler: Record<string, unknown> = {
       handler: "reverse_proxy",
-      upstreams: resolvedUpstreams.upstreams
+      upstreams: resolvedUpstreams.upstreams,
+      handle_response: upstreamErrorResponses(),
     };
 
     // Authentik outpost handler will be added later after protected paths
     let outpostRoute: CaddyHttpRoute | null = null;
     if (authentik) {
-      // Parse the outpost upstream URL to extract host:port for Caddy's dial field
-      let outpostDial: string;
-      try {
-        const url = new URL(authentik.outpostUpstream);
-        const port = url.port || (url.protocol === "https:" ? "443" : "80");
-        outpostDial = `${url.hostname}:${port}`;
-      } catch {
-        // If URL parsing fails, try to extract host:port from string
-        outpostDial = authentik.outpostUpstream.replace(/^https?:\/\//, "").replace(/\/$/, "");
-      }
-
       const outpostHandler: Record<string, unknown> = {
         handler: "reverse_proxy",
-        upstreams: [
-          {
-            dial: outpostDial
-          }
-        ]
+        ...buildAuthentikUpstream(authentik.outpostUpstream),
       };
 
       if (authentik.setOutpostHostHeader) {
@@ -1211,19 +1210,9 @@ async function buildProxyRoutes(
         ? ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "fd00::/8", "::1/128"]
         : authentik.trustedProxies;
 
-      // Parse the outpost upstream to extract host:port for dial
-      // Remove http://, https://, and any trailing slashes
-      let dialAddress = authentik.outpostUpstream.replace(/^https?:\/\//, "").replace(/\/$/, "");
-      // Remove any path portion if accidentally included
-      dialAddress = dialAddress.split("/")[0];
-
       const forwardAuthHandler: Record<string, unknown> = {
         handler: "reverse_proxy",
-        upstreams: [
-          {
-            dial: dialAddress
-          }
-        ],
+        ...buildAuthentikUpstream(authentik.outpostUpstream),
         rewrite: {
           method: "GET",
           uri: authentik.authEndpoint
@@ -2593,13 +2582,22 @@ export async function buildCaddyDocument() {
   // unmatched-request behavior and must remain last so it cannot shadow any
   // managed proxy host.
   const defaultResponseRoute = buildDefaultResponseRoute(defaultResponseSettings);
-  const mainRoutes = defaultResponseRoute ? [...httpRoutes, defaultResponseRoute] : httpRoutes;
+  const anubisGate = buildAnubisGate(process.env.ANUBIS_PROTECTED_DOMAIN);
+  const mainRoutes = [...(anubisGate?.routes ?? []), ...httpRoutes, ...(defaultResponseRoute ? [defaultResponseRoute] : [])];
 
   // Server-level error routes (Caddy handle_errors): per-host rules first so they
   // take precedence, then global rules act as a fallback for any unmatched host/status.
   const globalErrorPages = await getErrorPagesSettings();
   const globalErrorRoutes = (globalErrorPages?.rules ?? []).map((rule) => buildErrorPageRoute(rule));
-  const errorRoutes: CaddyHttpRoute[] = [...hostErrorRoutes, ...globalErrorRoutes];
+  const errorRoutes: CaddyHttpRoute[] = [...hostErrorRoutes, ...globalErrorRoutes, ...defaultErrorRoutes()];
+  if (!defaultResponseRoute) mainRoutes.push(caddyStatusRoute(404, "notFound"));
+  if (maintenanceEnabled()) mainRoutes.unshift(caddyStatusRoute(503, "maintenance"));
+  const feedback = feedbackProxyRoute(process.env.CPM_FEEDBACK_UPSTREAM);
+  if (feedback) mainRoutes.unshift(feedback);
+  mainRoutes.unshift({handle:[
+    {handler:"log_append", key:"request_id", value:"{http.request.uuid}"},
+    {handler:"headers", response:{set:{"X-Request-ID":["{http.request.uuid}"]}}},
+  ]});
 
   const hasTls = tlsConnectionPolicies.length > 0;
 
@@ -2614,6 +2612,7 @@ export async function buildCaddyDocument() {
   const loggingFormat = loggingSettings?.format ?? "json";
 
   const servers: Record<string, unknown> = {};
+  if (anubisGate) servers.anubis_success = anubisGate.successServer;
 
   // Server-level trusted proxies / client-IP headers. Caddy resolves client_ip
   // in core before any handler, so this is the only place a global list fixes

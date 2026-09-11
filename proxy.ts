@@ -1,3 +1,5 @@
+import { maintenanceEnabled, statusHtml } from "@/src/lib/status-pages";
+import { responseHeaders } from "@/src/lib/status-response";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import crypto from "node:crypto";
@@ -14,9 +16,30 @@ import { buildCsp } from "@/src/lib/csp";
 
 export default async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
+  const requestId = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  const diagnosticHeaders = new Headers(req.headers);
+  diagnosticHeaders.set("x-cpm-request-id", requestId);
+  diagnosticHeaders.set("x-cpm-request-time", timestamp);
+  diagnosticHeaders.set("x-cpm-request-path", pathname);
+
+  // Health probes stay available; APIs and server actions must also stop during maintenance.
+  if (maintenanceEnabled() && pathname !== "/api/health" && !(pathname === "/api/error-feedback" && req.method === "POST")) {
+    const headers = { ...responseHeaders(), "Retry-After": "300", "X-Request-ID": requestId };
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Service unavailable", code: "MAINTENANCE" }, {
+        status: 503, headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+    return new NextResponse(req.method === "HEAD" ? null : statusHtml("maintenance", "503", {requestId,timestamp,host:req.nextUrl.host,path:pathname,source:"app"}), { status: 503, headers });
+  }
 
   // Allow public routes
   if (
+    ((req.method === "GET" || req.method === "HEAD") &&
+      (pathname === "/fonts/barlow-condensed-bold.ttf" || pathname === "/fonts/ibm-plex-mono.ttf")) ||
+    pathname === "/api/error-feedback" ||
+    pathname === "/maintenance" ||
     pathname === "/login" ||
     pathname === "/portal" ||
     pathname.startsWith("/api/auth") ||
@@ -25,7 +48,8 @@ export default async function middleware(req: NextRequest) {
     pathname.startsWith("/api/v1/") ||
     pathname.startsWith("/api/forward-auth/")
   ) {
-    const publicResponse = NextResponse.next();
+    const publicResponse = NextResponse.next({request:{headers:diagnosticHeaders}});
+    publicResponse.headers.set("X-Request-ID",requestId);
     // Anti-clickjacking for public pages (/login, /portal): the authenticated
     // branch below sets the full security-header set, but public pages returned
     // here previously carried none, leaving the login and forward-auth portal
@@ -51,13 +75,14 @@ export default async function middleware(req: NextRequest) {
   const csp = buildCsp(nonce);
 
   // Set CSP as a request header so Next.js can read the nonce
-  const requestHeaders = new Headers(req.headers);
+  const requestHeaders = diagnosticHeaders;
   requestHeaders.set("Content-Security-Policy", csp);
 
   const response = NextResponse.next({
     request: { headers: requestHeaders },
   });
 
+  response.headers.set("X-Request-ID", requestId);
   // Also set CSP as a response header for browser enforcement
   response.headers.set("Content-Security-Policy", csp);
   response.headers.set("X-Content-Type-Options", "nosniff");
@@ -81,6 +106,6 @@ export const config = {
      *   analytics map silently breaks)
      * - public folder
      */
-    "/((?!_next/static|_next/image|favicon.ico|maplibre/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|maplibre/).*)",
   ],
 };

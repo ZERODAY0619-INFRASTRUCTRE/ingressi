@@ -208,7 +208,7 @@ function StatsBar({ stats }: { stats: WafEventStats }) {
   ];
 
   return (
-    <div className="grid grid-cols-5 gap-3">
+    <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
       {items.map(({ label, value, color }) => (
         <div key={label} className="rounded-lg border bg-card px-4 py-3 flex flex-col gap-0.5">
           <span className={cn("text-2xl font-bold leading-none", color || "text-foreground")}>{value}</span>
@@ -285,7 +285,7 @@ function AuditPanel({ rawData }: { rawData: string | null }) {
         {/* ── Overview ── */}
         {innerTab === "overview" && tx && (
           <>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
               <DetailRow label="Transaction ID">
                 <span className="font-mono text-xs">{tx.id ?? "—"}</span>
               </DetailRow>
@@ -376,7 +376,7 @@ function AuditPanel({ rawData }: { rawData: string | null }) {
           <div className="flex flex-col gap-4">
             {msgs.map((m, i) => (
               <div key={i} className="flex flex-col gap-2.5">
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2.5">
                   <DetailRow label="Rule ID">
                     <span className="font-mono text-xs text-destructive font-semibold">{m.details?.ruleId ?? "—"}</span>
                   </DetailRow>
@@ -489,7 +489,7 @@ function EventDetailPanel({
       />
 
       {/* Drawer */}
-      <aside className="fixed top-0 right-0 bottom-0 z-50 flex w-[540px] max-w-[92vw] flex-col border-l border-border bg-card shadow-2xl">
+      <aside className="fixed top-0 right-0 bottom-0 z-50 flex w-[540px] max-w-[92vw] flex-col border-l border-border bg-card">
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b shrink-0">
           <BlockedChip blocked={event.blocked} />
@@ -504,7 +504,7 @@ function EventDetailPanel({
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
 
           {/* Metadata grid */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border bg-muted/30 p-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 rounded-lg border bg-muted/30 p-4">
             <DetailRow label="Time (UTC)">
               <p className="text-sm">{formatDateTimeUtc(event.ts * 1000)}</p>
             </DetailRow>

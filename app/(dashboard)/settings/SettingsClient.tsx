@@ -1420,7 +1420,7 @@ function DnsResolversSection({
               defaultValue={dns?.resolvers?.join("\n") ?? ""}
               rows={2}
               disabled={isSlave && !dnsOverride}
-              className="flex min-h-[56px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className="flex min-h-[56px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none"
             />
           </FormRow>
           <FormRow label="Fallback resolvers">
@@ -1430,7 +1430,7 @@ function DnsResolversSection({
               defaultValue={dns?.fallbacks?.join("\n") ?? ""}
               rows={2}
               disabled={isSlave && !dnsOverride}
-              className="flex min-h-[56px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className="flex min-h-[56px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none"
             />
           </FormRow>
           <FormRow label="Query timeout" hint="e.g. 5s, 10s">
@@ -1569,7 +1569,7 @@ function TrustedProxiesSection({
           )}
           <FormRow
             label="Trusted proxy ranges"
-            hint="CIDRs, IPs, or the private_ranges shorthand — one per line. When CPM runs behind another proxy, Caddy resolves the real client IP from these. Leave empty to keep the current behaviour."
+            hint="CIDRs, IPs, or the private_ranges shorthand — one per line. When TOMORI runs behind another proxy, Caddy resolves the real client IP from these. Leave empty to keep the current behaviour."
           >
             <Textarea
               name="ranges"

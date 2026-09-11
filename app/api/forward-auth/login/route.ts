@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 import db from "@/src/lib/db";
 import { config } from "@/src/lib/config";
 import {
@@ -41,7 +42,8 @@ export async function POST(request: NextRequest) {
       request.headers.get("x-real-ip")?.trim() ||
       request.headers.get("x-forwarded-for")?.split(",").pop()?.trim() ||
       "unknown";
-    const rateLimitResult = isRateLimited(ip);
+    const rateLimitKey = `account:${username.toLowerCase()}`;
+    const rateLimitResult = isRateLimited(rateLimitKey);
     if (rateLimitResult.blocked) {
       return NextResponse.json(
         { error: "Too many login attempts. Please try again later." },
@@ -56,7 +58,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!user || user.status !== "active" || !user.passwordHash) {
-      registerFailedAttempt(ip);
+      registerFailedAttempt(rateLimitKey);
       logAuditEvent({
         userId: null,
         action: "forward_auth_login_failed",
@@ -68,7 +70,7 @@ export async function POST(request: NextRequest) {
 
     const isValid = await bcrypt.compare(password, user.passwordHash);
     if (!isValid) {
-      registerFailedAttempt(ip);
+      registerFailedAttempt(rateLimitKey);
       logAuditEvent({
         userId: user.id,
         action: "forward_auth_login_failed",
@@ -80,7 +82,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Successful credential check — reset rate limiter for this IP
-    resetAttempts(ip);
+    resetAttempts(rateLimitKey);
 
     // Consume the redirect intent — returns the server-stored redirect URI.
     // This is a one-time operation: the intent is deleted after consumption.
@@ -127,8 +129,11 @@ export async function POST(request: NextRequest) {
     // Build callback URL on the target domain
     const callbackUrl = new URL("/.cpm-auth/callback", intent.audience.origin);
     callbackUrl.searchParams.set("code", rawCode);
-
-    return NextResponse.json({ redirectTo: callbackUrl.toString() });
+    const browserNonce = randomBytes(32).toString("hex");
+    callbackUrl.searchParams.set("nonce", browserNonce);
+    const response = NextResponse.json({ redirectTo: callbackUrl.toString() });
+    response.cookies.set("_cpm_fa_nonce", browserNonce, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 300 });
+    return response;
   } catch (error) {
     console.error("Forward auth login error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
