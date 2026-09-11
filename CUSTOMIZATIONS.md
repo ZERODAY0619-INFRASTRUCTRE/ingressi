@@ -23,3 +23,6 @@ custom/main의 커스텀 이력은 보존한다. upstream에는 push하지 않�
 
 `package.json`의 version은 통합한 upstream 릴리스에 맞춘다. 기본 웹 빌드는 v1.11.2를 표시하며,
 infra 이미지 빌드는 `1.11.2+tomori.<commit>`을 전달해 커스텀 빌드를 구분한다.
+
+v1.11.2의 gRPC pin은 xcaddy에 명시적 replacement로 전달한다. xcaddy의 새 임시 모듈에서
+go.mod의 간접 의존성 pin이 누락되어 이전 gRPC가 선택되는 것을 방지한다.

@@ -45,4 +45,9 @@ MODULES
 cel_go_version="$(module_version github.com/google/cel-go)"
 set -- "$@" --replace "github.com/google/cel-go=github.com/google/cel-go@$cel_go_version"
 
+# xcaddy creates a new module, so an indirect go.mod pin is not inherited.
+# Preserve the reviewed gRPC version instead of taking a plugin's older minimum.
+grpc_version="$(module_version google.golang.org/grpc)"
+set -- "$@" --replace "google.golang.org/grpc=google.golang.org/grpc@$grpc_version"
+
 GOOS="$TARGETOS" GOARCH="$TARGETARCH" xcaddy build "$@" --output /usr/bin/caddy
