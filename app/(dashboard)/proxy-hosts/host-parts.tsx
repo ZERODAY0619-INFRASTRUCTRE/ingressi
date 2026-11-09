@@ -6,7 +6,6 @@
  */
 import { StatusDot, type StatusTone } from "@/components/ui/StatusDot";
 import { ProtectionPill } from "@/components/ui/ProtectionPill";
-import { formatDayUtc } from "@/components/ui/chart-format";
 import { cn } from "@/lib/utils";
 import { useFormat } from "@/src/components/preferences/PreferencesProvider";
 import {
@@ -84,14 +83,17 @@ export function CertificateSummary({ certificate }: { certificate: HostCertifica
   const tone = certificateTone(certificate);
   let headline: string;
   if (certificate.renewal === "expired") headline = "Expired";
-  else if (certificate.daysLeft !== null) headline = `${certificate.daysLeft} ${certificate.daysLeft === 1 ? "day" : "days"}`;
+  else if (certificate.daysLeft !== null) headline = certificate.daysLeft <= 30 ? `${certificate.daysLeft} ${certificate.daysLeft === 1 ? "day" : "days"} left` : certificate.kind === "imported" && /cloudflare/i.test(certificate.issuer ?? "") ? "Origin CA" : certificate.issuer ?? "Valid certificate";
   else if (certificate.renewal === "inactive") headline = "Host disabled";
   else if (certificate.renewal === "missing") headline = "Not issued";
   else if (certificate.renewal === "pending") headline = "Obtaining";
   else headline = "Not read yet";
   const issuer = certificate.issuer ?? (certificate.kind === "imported" ? "Imported" : "ACME");
   const parts = [issuer];
-  if (certificate.validTo) parts.push(formatDayUtc(Date.parse(certificate.validTo)));
+  if (certificate.validTo) {
+    parts.length = 0;
+    parts.push(`Expires ${new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(certificate.validTo))}`);
+  }
   const renewal = ["due", "overdue", "replace_soon"].includes(certificate.renewal) ? RENEWAL_LABELS[certificate.renewal] : null;
   return (
     <span className="flex flex-col">

@@ -631,7 +631,7 @@ export default function ProxyHostsClient({
         <>
           <div className="flex flex-wrap items-center gap-2.5">
             <ListSearchField
-              className="flex-[1_1_280px]"
+              className="w-full flex-none lg:max-w-md"
               value={searchTerm}
               onChange={handleSearchChange}
               placeholder="Domain, upstream or tag"
@@ -826,7 +826,7 @@ export default function ProxyHostsClient({
                           )}
                           <tr
                             className={cn(
-                              "border-b border-line align-top last:border-b-0 hover:bg-panel2",
+                              "border-b border-line align-middle last:border-b-0 hover:bg-panel2",
                               isSelected && "bg-brand-tint hover:bg-brand-tint",
                               !row.enabled && "text-muted-foreground"
                             )}
@@ -857,8 +857,11 @@ export default function ProxyHostsClient({
                               </td>
                             )}
                             <td className="px-2.5 py-3">
-                              <ProtectionPills protections={row.protections} />
-                              {canWrite && hosts.find(host => host.id === row.id) && <AnubisToggle initial={anubis} host={hosts.find(host => host.id === row.id)!} />}
+                              <div className="flex flex-wrap items-center gap-2">
+                              {row.protections.length > 0 && <ProtectionPills protections={row.protections} />}
+                              {canWrite && hosts.find(host => host.id === row.id) && <AnubisToggle compact initial={anubis} host={hosts.find(host => host.id === row.id)!} />}
+                              {!canWrite && row.protections.length === 0 && <span className="text-soft">—</span>}
+                              </div>
                             </td>
                             <td className="whitespace-nowrap px-2.5 py-3">
                               <CertificateSummary certificate={row.certificate} />
@@ -906,8 +909,8 @@ export default function ProxyHostsClient({
                             <ErrorRate row={row} /> 5xx
                           </span>
                         )}
-                        <ProtectionPills protections={row.protections} />
-                              {canWrite && hosts.find(host => host.id === row.id) && <AnubisToggle initial={anubis} host={hosts.find(host => host.id === row.id)!} />}
+                        {row.protections.length > 0 && <ProtectionPills protections={row.protections} />}
+                              {canWrite && hosts.find(host => host.id === row.id) && <AnubisToggle compact initial={anubis} host={hosts.find(host => host.id === row.id)!} />}
                         {row.tags.length > 0 && <TagChips tags={row.tags} />}
                       </div>
                       <div className="shrink-0">{actionsMenu(row)}</div>

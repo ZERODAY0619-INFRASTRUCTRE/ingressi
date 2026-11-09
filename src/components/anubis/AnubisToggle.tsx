@@ -10,7 +10,7 @@ import { inAnubisScope, type AnubisStatus } from "@/src/lib/anubis-policy";
 
 type Host = { id: number; name: string; domains: string[]; enabled: boolean; anubisEnabled?: boolean };
 
-export function AnubisToggle({ initial, host }: { initial?: AnubisStatus; host?: Host }) {
+export function AnubisToggle({ initial, host, compact = false }: { initial?: AnubisStatus; host?: Host; compact?: boolean }) {
   const router = useRouter();
   const controlId = useId();
   const [status, setStatus] = useState<AnubisStatus | null>(initial ?? null);
@@ -61,6 +61,18 @@ export function AnubisToggle({ initial, host }: { initial?: AnubisStatus; host?:
       setSaved(true); router.refresh();
     } catch (error) { setError(error instanceof Error ? error.message : "Unable to save Anubis settings"); }
     finally { setPending(false); }
+  }
+
+  if (compact && host) {
+    return <span className="inline-flex flex-col gap-1">
+      {available ? <button type="button" aria-label={label} aria-pressed={effective} disabled={pending}
+        title={note} onClick={() => change(!enabled)}
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-soft transition-colors hover:border-brand hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50">
+        <span aria-hidden="true" className={effective ? "size-1.5 rounded-full bg-brand" : "size-1.5 rounded-full bg-soft/50"} />
+        Anubis <span className={effective ? "text-foreground" : "text-soft"}>{pending ? "Applying…" : effective ? "On" : "Off"}</span>
+      </button> : <span className="text-xs text-soft" title={note}>Anubis unavailable</span>}
+      {error && <span role="alert" className="max-w-56 text-xs text-destructive">{error}</span>}
+    </span>;
   }
 
   return <div className={host ? "flex max-w-56 flex-col gap-1" : "flex flex-col gap-3"}>
