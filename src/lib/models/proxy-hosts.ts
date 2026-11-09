@@ -590,6 +590,7 @@ type IngressiForwardAuthMeta = {
 };
 
 type ProxyHostMeta = {
+  anubis_enabled?: boolean;
   custom_reverse_proxy_json?: string;
   custom_pre_handlers_json?: string;
   authentik?: ProxyHostAuthentikMeta;
@@ -615,6 +616,7 @@ type ProxyHostMeta = {
 };
 
 export type ProxyHost = {
+  anubisEnabled?: boolean;
   id: number;
   name: string;
   domains: string[];
@@ -1031,6 +1033,7 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
     return null;
   }
   const normalized: ProxyHostMeta = {};
+  if (typeof meta.anubis_enabled === "boolean") normalized.anubis_enabled = meta.anubis_enabled;
   const reverse = normalizeMetaValue(meta.custom_reverse_proxy_json ?? null);
   const preHandlers = normalizeMetaValue(meta.custom_pre_handlers_json ?? null);
 
@@ -1126,6 +1129,10 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
   // Validated in buildMeta, and only when the caller supplies `rateLimit`.
   if (meta.rate_limit) {
     normalized.rate_limit = meta.rate_limit;
+  }
+  const scopedMtls = Boolean(normalized.mtls?.protected_paths?.length || normalized.mtls?.excluded_paths?.length);
+  if (scopedMtls && normalized.cpm_forward_auth?.enabled) {
+    throw new ApiValidationError("Scoped mTLS cannot be combined with forward authentication until both checks are composed");
   }
 
   return Object.keys(normalized).length > 0 ? JSON.stringify(normalized) : null;
@@ -1321,6 +1328,7 @@ function parseMeta(value: string | null): ProxyHostMeta {
   try {
     const parsed = JSON.parse(value) as ProxyHostMeta;
     return {
+      anubis_enabled: typeof parsed.anubis_enabled === "boolean" ? parsed.anubis_enabled : undefined,
       custom_reverse_proxy_json: normalizeMetaValue(parsed.custom_reverse_proxy_json ?? null) ?? undefined,
       custom_pre_handlers_json: normalizeMetaValue(parsed.custom_pre_handlers_json ?? null) ?? undefined,
       authentik: sanitizeAuthentikMeta(parsed.authentik),
@@ -1447,6 +1455,9 @@ function normalizeAuthentikInput(
     } else {
       delete next.bypass_sources;
     }
+  }
+  if (next.enabled && next.outpost_domain && /[:/\s{}]/.test(next.outpost_domain)) {
+    throw new Error("Outpost Domain must be a path namespace such as outpost.goauthentik.io, not an SSO URL. Put the server URL in Outpost Upstream URL.");
   }
 
   if ((next.enabled ?? false) && next.outpost_domain && !next.auth_endpoint) {
@@ -2525,6 +2536,7 @@ function parseProxyHost(row: ProxyHostRow): ProxyHost {
   const meta = parseMeta(row.meta ?? null);
   return {
     id: row.id,
+    anubisEnabled: meta.anubis_enabled !== false,
     name: row.name,
     domains: JSON.parse(row.domains),
     upstreams: JSON.parse(row.upstreams),
@@ -2774,6 +2786,7 @@ export async function updateProxyHost(id: number, rawInput: Partial<ProxyHostInp
   await assertWildcardIssuable(domainList, effectiveCertificateId);
   const upstreams = input.upstreams ? JSON.stringify(Array.from(new Set(input.upstreams))) : JSON.stringify(existing.upstreams);
   const existingMeta: ProxyHostMeta = {
+    anubis_enabled: existing.anubisEnabled,
     custom_reverse_proxy_json: existing.customReverseProxyJson ?? undefined,
     custom_pre_handlers_json: existing.customPreHandlersJson ?? undefined,
     authentik: dehydrateAuthentik(existing.authentik),

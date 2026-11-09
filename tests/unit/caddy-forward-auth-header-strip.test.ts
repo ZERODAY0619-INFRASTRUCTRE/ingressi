@@ -274,7 +274,7 @@ function authSubrequestHandlers(doc: unknown): Handler[] {
       node.forEach(walk);
     } else if (node && typeof node === 'object') {
       const obj = node as Handler;
-      if (obj.handler === 'reverse_proxy' && obj.handle_response) out.push(obj);
+      if (obj.handler === 'reverse_proxy' && obj.handle_response && obj.rewrite) out.push(obj);
       Object.values(obj).forEach(walk);
     }
   })(doc);

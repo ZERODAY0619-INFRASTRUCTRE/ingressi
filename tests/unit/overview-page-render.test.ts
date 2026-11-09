@@ -195,7 +195,7 @@ describe('the first run', () => {
 
   it('shows the setup checklist and empty traffic', () => {
     const html = render(firstRun());
-    expect(html).toContain('Saturday 3 October · 11:36 UTC · Ingressi <span class="num">v2.0.3</span>');
+    expect(html).toContain('Saturday 3 October · 11:36 UTC · TOMORI <span class="num">v2.0.3</span>');
     expect(html).toMatch(/<h1[^>]*>Welcome, admin<\/h1>/);
     expect(html).toContain('Set up this install');
     expect(html).toContain('0 of 5 done');

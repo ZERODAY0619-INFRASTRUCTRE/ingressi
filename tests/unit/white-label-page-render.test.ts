@@ -22,11 +22,11 @@ import { ASSET_LIMITS, DEFAULT_BRANDING_SETTINGS, DEFAULT_PUBLIC_BRANDING, MAX_A
 function view(overrides: Partial<BrandingView> = {}): BrandingView {
   return {
     settings: { ...DEFAULT_BRANDING_SETTINGS },
-    effective: { productName: 'Ingressi', loginHeading: 'Ingressi', emailSenderName: null, accent: null, poweredByShown: false },
+    effective: { productName: 'TOMORI', loginHeading: 'TOMORI', emailSenderName: null, accent: null, poweredByShown: false },
     assets: { logoLight: null, logoDark: null, favicon: null },
     source: 'default',
     updatedAt: null,
-    defaultProductName: 'Ingressi',
+    defaultProductName: 'TOMORI',
     limits: { maxBytes: MAX_ASSET_BYTES, assets: ASSET_LIMITS },
     ...overrides,
   };
@@ -83,7 +83,7 @@ describe('Branding page', () => {
     expect(html).toContain('Example Edge');
     expect(html).toContain('Managed by Example IT.');
     expect(html).toContain('background:#1d4ed8');
-    expect(html).toContain('Powered by Ingressi');
+    expect(html).toContain('Powered by TOMORI');
   });
 
   it('flags an accent colour without enough contrast', () => {
@@ -96,7 +96,7 @@ describe('dashboard shell', () => {
   it('shows the product name and logo from the branding context', () => {
     const html = renderToStaticMarkup(
       createElement(BrandingProvider, {
-        value: { ...DEFAULT_PUBLIC_BRANDING, productName: 'Example Edge', logoLightUrl: '/api/branding/logo-light?v=1', logoDarkUrl: '/api/branding/logo-dark?v=2', supportEmail: 'help@example.com', poweredBy: { name: 'Ingressi', url: 'https://example.com' } },
+        value: { ...DEFAULT_PUBLIC_BRANDING, productName: 'Example Edge', logoLightUrl: '/api/branding/logo-light?v=1', logoDarkUrl: '/api/branding/logo-dark?v=2', supportEmail: 'help@example.com', poweredBy: { name: 'TOMORI', url: 'https://example.com' } },
         children: createElement(DashboardLayoutClient, { user: { id: '1', name: 'Admin', permissions: [], isAdmin: true }, children: 'content' }),
       })
     );
@@ -111,7 +111,7 @@ describe('dashboard shell', () => {
     const html = renderToStaticMarkup(
       createElement(DashboardLayoutClient, { user: { id: '1', name: 'Admin', permissions: [], isAdmin: true }, children: 'content' })
     );
-    expect(html).toContain('Ingressi');
+    expect(html).toContain('TOMORI');
     expect(html).not.toContain('Powered by');
   });
 });

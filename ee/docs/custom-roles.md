@@ -690,4 +690,6 @@ Every guard of a route, page or server action and the permission it checks. Rout
 | `ee/white-label/ui/actions.ts` | `uploadBrandingAssetAction` | `branding:write` |
 | `ee/white-label/ui/actions.ts` | `deleteBrandingAssetAction` | `branding:write` |
 | `ee/white-label/ui/actions.ts` | `resetBrandingAction` | `branding:write` |
+| `app/api/v1/anubis/route.ts` | `GET` | `settings:read` |
+| `app/api/v1/anubis/route.ts` | `PUT` | `settings:write` |
 <!-- call-sites:end -->

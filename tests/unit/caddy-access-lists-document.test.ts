@@ -201,7 +201,7 @@ describe('access lists in buildCaddyDocument', () => {
 
     const doc = await buildCaddyDocument();
     const routes = server(doc).routes as Array<Record<string, any>>;
-    expect(routes[0].match).toBeDefined();
+    expect(routes[1].match).toBeDefined();
     expect(JSON.stringify(routes)).not.toContain('198.51.100.19');
   });
 });

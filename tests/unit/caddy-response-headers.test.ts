@@ -125,9 +125,9 @@ describe("response headers validation and route builder", () => {
 });
 
 describe("buildCaddyDocument response headers", () => {
-  it("does not start a server without hosts", async () => {
+  it("applies response headers to the custom catch-all without configured hosts", async () => {
     await saveResponseHeadersSettings({ set: {}, remove: ["Server", "Via"] });
-    expect(cpmServer(await buildCaddyDocument())).toBeUndefined();
+    expect(cpmServer(await buildCaddyDocument())?.routes?.[0]).toEqual(HIDE_CADDY);
   });
 
   it("goes first in the routes and the error routes", async () => {
@@ -136,8 +136,8 @@ describe("buildCaddyDocument response headers", () => {
 
     const server = cpmServer(await buildCaddyDocument());
     expect(server?.routes?.[0]).toEqual(HIDE_CADDY);
-    expect(server?.routes?.slice(1).every((route) => route.match !== undefined)).toBe(true);
-    expect(server?.errors?.routes).toEqual([HIDE_CADDY]);
+    expect(server?.routes?.[1]).toMatchObject({handle: [{handler: "log_append"}, {handler: "headers"}]});
+    expect(server?.errors?.routes?.[0]).toEqual(HIDE_CADDY);
   });
 
   it("also covers the response for unknown hosts", async () => {
@@ -153,8 +153,8 @@ describe("buildCaddyDocument response headers", () => {
   it("leaves the document as it was without the setting, and ignores an invalid stored one", async () => {
     await seedAdminAndHost();
     const before = cpmServer(await buildCaddyDocument());
-    expect(before?.routes?.every((route) => route.match !== undefined)).toBe(true);
-    expect(before?.errors).toBeUndefined();
+    expect(before?.routes?.[0]).toMatchObject({handle: [{handler: "log_append"}, {handler: "headers"}]});
+    expect(before?.errors?.routes?.length).toBeGreaterThan(0);
 
     await setSetting("response_headers", { remove: ["Bad Name"] });
     expect(cpmServer(await buildCaddyDocument())).toEqual(before);

@@ -175,8 +175,8 @@ describe('GET /api/v1/branding', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(data).toMatchObject({
       source: 'default',
-      defaultProductName: 'Ingressi',
-      effective: { productName: 'Ingressi', loginHeading: 'Ingressi', accent: null, poweredByShown: false },
+      defaultProductName: 'TOMORI',
+      effective: { productName: 'TOMORI', loginHeading: 'TOMORI', accent: null, poweredByShown: false },
       assets: { logoLight: null, logoDark: null, favicon: null },
       settings: { productName: null, showPoweredBy: true },
     });
@@ -520,7 +520,7 @@ describe('instance sync', () => {
   it('ignores a synced copy on an instance that is not a slave', async () => {
     await setRow('synced:white_label', { productName: 'Master Brand' });
     await refreshBranding();
-    expect(getBranding().productName).toBe('Ingressi');
+    expect(getBranding().productName).toBe('TOMORI');
   });
 });
 
@@ -547,7 +547,7 @@ describe('where the branding shows', () => {
     expect(html).toContain('href="https://support.example.com/"');
     expect(html).toContain('href="mailto:help@example.com"');
     expect(html).toContain('Powered by');
-    expect(html).toContain('>Ingressi</a>');
+    expect(html).toContain('>TOMORI</a>');
   });
 
   it('the forward-auth portal', () => {
@@ -572,8 +572,8 @@ describe('where the branding shows', () => {
     expect(email.text).toContain('Sent by Example Edge');
     expect(email.html).toContain('Sent by Example Edge');
     expect(n.title).toBe('Test notification from Example Edge');
-    expect(buildWebhookBody(n).source).toBe('ingressi');
-    expect(pagerDutyDedupKey(1, 'x')).toMatch(/^ingressi-1-/);
+    expect(buildWebhookBody(n).source).toBe('tomori');
+    expect(pagerDutyDedupKey(1, 'x')).toMatch(/^tomori-1-/);
 
     mail.sendMail.mockResolvedValue({});
     const channel = {

@@ -75,6 +75,8 @@ describe('permission call sites', () => {
     // list, whose providers each check the caller's permissions
     // (src/lib/attention/registry.ts).
     const unguarded = new Set([
+      // Public error reports enforce their own origin, payload and rate limits.
+      'app/api/error-feedback/route.ts',
       'app/api/branding/[asset]/route.ts',
       'app/api/v1/access-review-assignments/[id]/route.ts',
       'app/api/v1/access-review-assignments/confirm/route.ts',

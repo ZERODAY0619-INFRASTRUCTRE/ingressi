@@ -163,7 +163,23 @@ do_apply() {
     COMPOSE_ARGS="$COMPOSE_ARGS -f $COMPOSE_EXTRA_FILE"
   fi
   if [ -f "$OVERRIDE_FILE" ]; then
-    COMPOSE_ARGS="$COMPOSE_ARGS -f $OVERRIDE_FILE"
+    # Treat the web-owned file as untrusted data. Extract only numeric port
+    # bindings and build an immutable minimal override; never pass the original
+    # document (which could alter mounts, user, entrypoint or capabilities).
+    SAFE_OVERRIDE="$DATA_DIR/.docker-compose.l4-safe.yml"
+    : > "$SAFE_OVERRIDE"
+    printf '%s\n' 'services:' '  caddy:' '    ports:' >> "$SAFE_OVERRIDE"
+    awk '
+      /ports:/ { in_ports=1; next }
+      in_ports && /^[[:space:]]+-[[:space:]]+"[0-9]+:[0-9]+(\/udp)?"[[:space:]]*$/ { print "      " substr($0, index($0, "- ")); next }
+      in_ports && /^[^[:space:]]/ { in_ports=0 }
+    ' "$OVERRIDE_FILE" >> "$SAFE_OVERRIDE"
+    if ! awk '!/^services:$/ && !/^  caddy:$/ && !/^    ports:$/ && !/^      - "[0-9]+:[0-9]+(\/udp)?"$/ { exit 1 }' "$SAFE_OVERRIDE"; then
+      write_status "failed" "Rejected invalid L4 port override"
+      rm -f "$SAFE_OVERRIDE" "$APPLY_LOCK" "$TRIGGER_FILE"
+      return 0
+    fi
+    COMPOSE_ARGS="$COMPOSE_ARGS -f $SAFE_OVERRIDE"
   fi
 
   write_status "applying" "Recreating caddy container with updated ports..."

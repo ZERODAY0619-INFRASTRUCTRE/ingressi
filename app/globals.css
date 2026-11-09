@@ -107,6 +107,8 @@
   to { height: 0; }
 }
 
+@font-face{font-family:"TOMORI Display";src:url('/fonts/barlow-condensed-bold.ttf') format('truetype');font-style:normal;font-weight:700;font-display:swap}
+@font-face{font-family:"TOMORI Mono";src:url('/fonts/ibm-plex-mono.ttf') format('truetype');font-style:normal;font-weight:400;font-display:swap}
 @layer base {
   /* Dark, the default. */
   :root,
@@ -257,3 +259,9 @@
 .light .brand-logo-dark {
   display: none;
 }
+
+/* TOMORI retains its local typography and accent on the expanded upstream screens. */
+:root { --eva-display: "TOMORI Display", "Arial Narrow", Arial, sans-serif; --eva-mono: "TOMORI Mono", Consolas, monospace; }
+.dark { --ground: #0b090b; --panel: #140e0f; --panel2: #241214; --raise: #341518; --line: #743338; --line2: #ba5b61; --foreground: #f3ece2; --soft: #c5b7b1; --brand: #ff8589; --brand-fill: #f05252; --on-brand-fill: #0b090b; --brand-tint: #341518; --radius: 0px; }
+.light { --brand: #a42632; --brand-fill: #a42632; --on-brand-fill: #ffffff; --brand-tint: #fbe8e9; --radius: 0px; }
+h1, h2, h3 { font-family: var(--eva-display); }

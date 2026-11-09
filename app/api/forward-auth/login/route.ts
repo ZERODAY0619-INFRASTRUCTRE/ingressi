@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { appDb } from "@/src/lib/db";
@@ -182,8 +183,11 @@ export async function POST(request: NextRequest) {
     // Build callback URL on the target domain
     const callbackUrl = new URL(FORWARD_AUTH_CALLBACK_PATH, intent.audience.origin);
     callbackUrl.searchParams.set("code", rawCode);
-
-    return NextResponse.json({ redirectTo: callbackUrl.toString() });
+    const browserNonce = randomBytes(32).toString("hex");
+    callbackUrl.searchParams.set("nonce", browserNonce);
+    const response = NextResponse.json({ redirectTo: callbackUrl.toString() });
+    response.cookies.set("_cpm_fa_nonce", browserNonce, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 300 });
+    return response;
   } catch (error) {
     console.error("Forward auth login error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

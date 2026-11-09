@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, MoreHorizontal, Plus, Server } from "lucide-react";
 import { toast } from "sonner";
+import { AnubisToggle } from "@/src/components/anubis/AnubisToggle";
+import type { AnubisStatus } from "@/src/lib/anubis-policy";
 import type { AccessList } from "@/lib/models/access-lists";
 import type { CertificatePickerOption } from "@/lib/certificate-api";
 import type { ProxyHost } from "@/lib/models/proxy-hosts";
@@ -63,6 +65,7 @@ type ForwardAuthGroup = { id: number; name: string; description: string | null; 
 type ForwardAuthAccessMap = Record<number, { userIds: number[]; groupIds: number[] }>;
 
 type Props = {
+  anubis?: AnubisStatus;
   /** The hosts on this page, for the host dialogs (same order as `rows`). */
   hosts: ProxyHost[];
   /** The hosts on this page as the list shows them. */
@@ -301,6 +304,7 @@ function HostName({ row }: { row: HostListRow }) {
 }
 
 export default function ProxyHostsClient({
+  anubis,
   hosts,
   rows,
   totalHosts,
@@ -854,6 +858,7 @@ export default function ProxyHostsClient({
                             )}
                             <td className="px-2.5 py-3">
                               <ProtectionPills protections={row.protections} />
+                              {canWrite && hosts.find(host => host.id === row.id) && <AnubisToggle initial={anubis} host={hosts.find(host => host.id === row.id)!} />}
                             </td>
                             <td className="whitespace-nowrap px-2.5 py-3">
                               <CertificateSummary certificate={row.certificate} />
@@ -902,6 +907,7 @@ export default function ProxyHostsClient({
                           </span>
                         )}
                         <ProtectionPills protections={row.protections} />
+                              {canWrite && hosts.find(host => host.id === row.id) && <AnubisToggle initial={anubis} host={hosts.find(host => host.id === row.id)!} />}
                         {row.tags.length > 0 && <TagChips tags={row.tags} />}
                       </div>
                       <div className="shrink-0">{actionsMenu(row)}</div>

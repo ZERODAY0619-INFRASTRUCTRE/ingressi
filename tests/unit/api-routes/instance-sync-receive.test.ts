@@ -164,7 +164,7 @@ describe('POST /api/instances/sync', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: "L4 proxy host 1: listen port 443 is reserved for Ingressi's own Caddy listeners (HTTP 80/443, admin API 2019)",
+      error: "L4 proxy host 1: listen port 443 is reserved for TOMORI's own Caddy listeners (HTTP 80/443, admin API 2019)",
     });
     expect(mockApplySyncPayload).not.toHaveBeenCalled();
   });

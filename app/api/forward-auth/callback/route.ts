@@ -15,6 +15,11 @@ const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 days
  */
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
+  const nonce = request.nextUrl.searchParams.get("nonce");
+  const expectedNonce = request.cookies.get("_cpm_fa_nonce")?.value;
+  if (!nonce || !expectedNonce || nonce.length != 64 || nonce !== expectedNonce) {
+    return new NextResponse("Invalid browser login state", { status: 401 });
+  }
   if (!code) {
     return new NextResponse("Missing code parameter", { status: 400 });
   }

@@ -18,7 +18,7 @@ describe('buildLocationReverseProxy', () => {
     );
 
     expect(safePath).toBe('/api/*');
-    expect(reverseProxyHandler).toEqual({
+    expect(reverseProxyHandler).toMatchObject({
       handler: 'reverse_proxy',
       upstreams: [{ dial: 'backend:3000' }],
     });

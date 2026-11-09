@@ -307,7 +307,7 @@ function ContinentPicker({ name, initialValues = [], accentColor = "warning" }: 
                 "flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border-[1.5px] cursor-pointer select-none transition-all duration-100",
                 isSelected
                   ? isWarning
-                    ? "border-yellow-500 bg-yellow-500/10 shadow-[0_0_0_1px_rgba(237,108,2,0.25)]"
+                    ? "border-primary bg-primary/10"
                     : "border-green-500 bg-green-500/10 shadow-[0_0_0_1px_rgba(46,125,50,0.25)]"
                   : "border-border hover:border-muted-foreground hover:bg-accent"
               )}
@@ -522,7 +522,7 @@ function RulesPanel({ prefix, initial, resetKey = 0 }: RulesPanelProps) {
       />
 
       {/* CIDRs + IPs */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <TagInput
           key={`${prefix}-cidrs-${resetKey}`}
           name={`geoblock${cap}Cidrs`}
@@ -618,7 +618,7 @@ export function GeoBlockFields({ initialValues, showModeSelector = true }: GeoBl
       <input type="hidden" name="geoblockMode" value={mode} />
 
       {/* Detail fields */}
-      <div className={cn(
+      <div inert={!enabled} className={cn(
         "overflow-hidden transition-all duration-200",
         enabled ? "max-h-[3000px] opacity-100 mt-4" : "max-h-0 opacity-0 pointer-events-none"
       )}>
@@ -632,7 +632,7 @@ export function GeoBlockFields({ initialValues, showModeSelector = true }: GeoBl
                   className={cn(
                     "flex-1 py-2 px-3 rounded-xl border-[1.5px] cursor-pointer text-center transition-all duration-150 select-none",
                     mode === v
-                      ? "border-yellow-500 bg-yellow-500/10"
+                      ? "border-primary bg-primary/10"
                       : "border-border hover:border-muted-foreground"
                   )}
                 >
@@ -712,7 +712,7 @@ export function GeoBlockFields({ initialValues, showModeSelector = true }: GeoBl
 
                   <div className="border-t border-border" />
 
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div className="col-span-1">
                       <label className="text-sm font-medium mb-1 block">Status Code</label>
                       <Input

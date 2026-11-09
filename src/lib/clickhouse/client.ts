@@ -124,6 +124,8 @@ SETTINGS index_granularity = 8192
 
 // Migrations applied to existing tables on startup (idempotent MODIFY COLUMN).
 const TRAFFIC_EVENTS_MIGRATIONS = [
+  `ALTER TABLE traffic_events ADD COLUMN IF NOT EXISTS observed_public_ip Nullable(String) DEFAULT NULL`,
+  `ALTER TABLE traffic_events ADD COLUMN IF NOT EXISTS geoip_source LowCardinality(String) DEFAULT 'unknown'`,
   `ALTER TABLE traffic_events MODIFY COLUMN ts DateTime CODEC(Delta, ZSTD)`,
   `ALTER TABLE traffic_events MODIFY COLUMN client_ip String CODEC(ZSTD(3))`,
   `ALTER TABLE traffic_events MODIFY COLUMN country_code LowCardinality(Nullable(String))`,
@@ -147,6 +149,8 @@ const TRAFFIC_EVENTS_MIGRATIONS = [
 ];
 
 const WAF_EVENTS_MIGRATIONS = [
+  `ALTER TABLE waf_events ADD COLUMN IF NOT EXISTS observed_public_ip Nullable(String) DEFAULT NULL`,
+  `ALTER TABLE waf_events ADD COLUMN IF NOT EXISTS geoip_source LowCardinality(String) DEFAULT 'unknown'`,
   `ALTER TABLE waf_events MODIFY COLUMN ts DateTime CODEC(Delta, ZSTD)`,
   `ALTER TABLE waf_events MODIFY COLUMN host LowCardinality(String) DEFAULT '' CODEC(ZSTD(3))`,
   `ALTER TABLE waf_events MODIFY COLUMN client_ip String CODEC(ZSTD(3))`,
@@ -293,6 +297,8 @@ export interface TrafficEventRow {
   ts: number;
   client_ip: string;
   country_code: string | null;
+  observed_public_ip?: string | null;
+  geoip_source?: string;
   host: string;
   method: string;
   uri: string;
@@ -322,6 +328,8 @@ export interface WafEventRow {
   host: string;
   client_ip: string;
   country_code: string | null;
+  observed_public_ip?: string | null;
+  geoip_source?: string;
   rule_id: number | null;
   rule_message: string | null;
   severity: string | null;

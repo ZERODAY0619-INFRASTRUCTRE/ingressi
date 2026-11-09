@@ -1,3 +1,4 @@
+import { resolveAnalyticsGeo } from './analytics-geo';
 import { existsSync, statSync } from 'node:fs';
 import type { BlockList } from 'node:net';
 import { appDb } from './db';
@@ -220,7 +221,7 @@ export function parseLine(line: string, blocked: BlockedSignatures, context: Par
   return {
     ts,
     client_ip: clientIp,
-    country_code: ip.country,
+    ...resolveAnalyticsGeo(clientIp, ts, (address) => lookupIp(address).country),
     host,
     method,
     uri,

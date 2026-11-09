@@ -54,7 +54,7 @@ describe('e-mail', () => {
       connectionTimeout: DELIVERY_TIMEOUT_MS, greetingTimeout: DELIVERY_TIMEOUT_MS, socketTimeout: DELIVERY_TIMEOUT_MS,
     });
     expect(mail.sendMail).toHaveBeenCalledWith(expect.objectContaining({
-      from: 'alerts@example.com', to: ['a@example.com', 'b@example.com'], subject: '[Ingressi] [FIRING] Upstream 10.0.0.5:8080 is failing',
+      from: 'alerts@example.com', to: ['a@example.com', 'b@example.com'], subject: '[TOMORI] [FIRING] Upstream 10.0.0.5:8080 is failing',
     }));
     expect(mail.close).toHaveBeenCalled();
   });

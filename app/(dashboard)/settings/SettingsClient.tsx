@@ -1,5 +1,6 @@
 "use client";
 
+import { AnubisSettings } from "@/src/components/anubis/AnubisSettings";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,7 @@ export default function SettingsClient({ general, baseUrl, isSlave, overrideGene
       <SettingsGroupForms name="General" canSave={canWriteSettings} onDirtyChange={onDirtyChange}>
         <GeneralCard general={general} baseUrl={baseUrl} isSlave={isSlave} override={overrideGeneral} />
       </SettingsGroupForms>
+      {canWriteSettings && <AnubisSettings />}
     </div>
   );
 }

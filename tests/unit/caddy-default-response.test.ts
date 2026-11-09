@@ -32,6 +32,24 @@ function cpmServer(document: unknown): IngressiServer | undefined {
     .apps?.http?.servers?.ingressi;
 }
 
+// TOMORI prepends non-terminal request telemetry before host/default routing.
+function applicationRoutes(server: IngressiServer | undefined): Array<Record<string, unknown>> {
+  const routes = server?.routes ?? [];
+  expect(routes[0]).toMatchObject({ handle: [
+    { handler: "log_append", key: "request_id" },
+    { handler: "headers" },
+  ] });
+  expect(routes[0].terminal).toBeUndefined();
+  return routes.slice(1);
+}
+
+function expectNotFound(route: Record<string, unknown> | undefined) {
+  expect(route).toMatchObject({ terminal: true, handle: [
+    { handler: "templates" },
+    { handler: "static_response", status_code: 404 },
+  ] });
+}
+
 async function seedAdminAndHost() {
   const now = new Date().toISOString();
   await ctx.db.insert(schema.users).values({
@@ -153,8 +171,10 @@ describe("default response validation and route builder", () => {
 });
 
 describe("buildCaddyDocument default response", () => {
-  it("preserves the current no-server document when there are no hosts or setting", async () => {
-    expect(cpmServer(await buildCaddyDocument())).toBeUndefined();
+  it("serves the TOMORI 404 when there are no hosts or setting", async () => {
+    const routes = applicationRoutes(cpmServer(await buildCaddyDocument()));
+    expect(routes).toHaveLength(1);
+    expectNotFound(routes[0]);
   });
 
   it("creates the HTTP server for a custom response even with zero proxy hosts", async () => {
@@ -167,7 +187,7 @@ describe("buildCaddyDocument default response", () => {
 
     const server = cpmServer(await buildCaddyDocument());
     expect(server?.listen).toEqual([":80"]);
-    expect(server?.routes).toEqual([{
+    expect(applicationRoutes(server)).toEqual([{
       handle: [{
         handler: "static_response",
         status_code: 404,
@@ -182,7 +202,7 @@ describe("buildCaddyDocument default response", () => {
     await seedAdminAndHost();
     await saveDefaultResponseSettings({ mode: "respond", status: 403, body: "Forbidden" });
 
-    const routes = cpmServer(await buildCaddyDocument())?.routes ?? [];
+    const routes = applicationRoutes(cpmServer(await buildCaddyDocument()));
     expect(routes.length).toBeGreaterThan(1);
     expect(routes.slice(0, -1).every((route) => route.match !== undefined)).toBe(true);
     expect(JSON.stringify(routes.slice(0, -1))).toContain("known.example.test");
@@ -192,13 +212,14 @@ describe("buildCaddyDocument default response", () => {
     });
   });
 
-  it("does not append a catch-all route when mode is reset to caddy", async () => {
+  it("restores the TOMORI 404 fallback when mode is reset to caddy", async () => {
     await seedAdminAndHost();
     await saveDefaultResponseSettings({ mode: "caddy" });
 
-    const routes = cpmServer(await buildCaddyDocument())?.routes ?? [];
+    const routes = applicationRoutes(cpmServer(await buildCaddyDocument()));
     expect(routes.length).toBeGreaterThan(0);
-    expect(routes.every((route) => route.match !== undefined)).toBe(true);
+    expect(routes.slice(0, -1).every((route) => route.match !== undefined)).toBe(true);
+    expectNotFound(routes.at(-1));
     expect(JSON.stringify(routes)).toContain("known.example.test");
   });
 

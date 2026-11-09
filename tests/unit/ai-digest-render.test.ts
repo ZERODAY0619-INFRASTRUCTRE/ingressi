@@ -102,7 +102,7 @@ describe('digest sections', () => {
 describe('digest formats per channel', () => {
   it('e-mail: HTML with every value escaped, plus the plain-text part', () => {
     const email = renderDigestEmail(content());
-    expect(email.subject).toBe('[Ingressi] Daily security digest for 2026-10-02');
+    expect(email.subject).toBe('[TOMORI] Daily security digest for 2026-10-02');
     expect(email.html).not.toContain('<script>');
     expect(email.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;.example.com');
     expect(email.html).toContain('<h3 style="margin:16px 0 4px">AI-generated summary</h3>');
@@ -139,7 +139,7 @@ describe('digest formats per channel', () => {
 
   it('webhook: structured facts and a labeled narrative', () => {
     const body = buildDigestWebhookBody(content()) as any;
-    expect(body).toMatchObject({ version: 1, source: 'ingressi', type: 'digest', localDate: '2026-10-02', timeZone: 'Europe/Rome' });
+    expect(body).toMatchObject({ version: 1, source: 'tomori', type: 'digest', localDate: '2026-10-02', timeZone: 'Europe/Rome' });
     expect(body.narrative).toEqual({ label: 'AI-generated summary', text: expect.stringContaining('Traffic was normal') });
     expect(body.facts.traffic.blocked.waf).toBe(200);
     expect(buildDigestWebhookBody(content({ narrative: null })).narrative).toBeNull();

@@ -1,3 +1,4 @@
+import { APP_NAME, APP_FULL_NAME } from "@/src/lib/branding";
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiPermission, apiErrorResponse } from "@/src/lib/api-auth";
 import { APP_VERSION } from "@/src/lib/app-version";

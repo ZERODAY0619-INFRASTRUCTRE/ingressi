@@ -342,7 +342,7 @@ describe('integrity', () => {
     expect(row.sha256).toBe(sha256Hex(row.content));
     expect(detail.sha256).toBe(row.sha256);
     expect(detail.document.generatedBy).toEqual({ userId: seed.adminId, name: 'Alice Admin', email: 'admin@example.com' });
-    expect(detail.document.product.name).toBe('Ingressi');
+    expect(detail.document.product.name).toBe('TOMORI');
     expect(detail.document.period).toEqual({ from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T12:00:00.000Z' });
     expect(logAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
       action: 'compliance_report_generated',

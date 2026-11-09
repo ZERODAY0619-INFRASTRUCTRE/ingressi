@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 
-FROM oven/bun:1-slim AS base
+FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS base
 WORKDIR /app
 
 FROM base AS deps
@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json bun.lock ./
 # --ignore-scripts skips native addon compilation (better-sqlite3 is a test-only devDep;
 # production uses bun's built-in bun:sqlite which needs no compilation)
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=cache,id=cpm-bun-install,target=/root/.bun/install/cache,sharing=locked \
+    bun install --frozen-lockfile --ignore-scripts
 
 # Litestream (github.com/benbjohnson/litestream, Apache-2.0) replicates the
 # SQLite database to S3-compatible storage in a high availability cluster
@@ -106,7 +107,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/db-tools ./db-tools
 COPY --from=litestream /opt/litestream/litestream /usr/local/bin/litestream
 COPY --from=litestream /opt/litestream/LICENSE /usr/share/doc/litestream/LICENSE
 
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+RUN mkdir -p /app/data /app/feedback && chown -R nextjs:nodejs /app/data /app/feedback
 
 # Shared volume for the custom ACME CA root PEM (issue #192). The web container
 # writes it here; Caddy mounts the same volume read-only. Mode 0777 so it stays
