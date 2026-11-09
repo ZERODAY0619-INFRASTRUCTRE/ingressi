@@ -1,152 +1,199 @@
 "use client";
 
-import { useState } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import Link from "next/link";
+import { useState, type ReactNode } from "react";
+import { Plus, SlidersHorizontal } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { SearchField } from "@/components/ui/SearchField";
-import type { AcmeHost, CaCertificateView, CertExpiryStatus, ImportedCertView, ManagedCertView, MtlsRole } from "./page";
-import type { IssuedClientCertificate } from "@/lib/models/issued-client-certificates";
-import { StatusSummaryBar } from "./components/StatusSummaryBar";
-import { AcmeTab } from "./components/AcmeTab";
-import { ImportedTab } from "./components/ImportedTab";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { IssueClientCertDialog } from "@/components/ca-certificates/CaCertDialogs";
+import type { CertificateOverview } from "@/src/lib/certificate-renewal";
+import type { DnsProviderChoices } from "@/src/lib/dns-provider-choice";
+import { ManagedCertificateSheet } from "@/components/certificates/ManagedCertificateSheet";
+import type {
+  CaCertificateView,
+  CertificatesTab as TabId,
+  ImportedCertView,
+  IssuedClientCertificateView,
+  ManagedCertificateView,
+  MtlsRoleView,
+} from "./page";
+import { NO_CLIENT_CERT_FILTERS, type ClientCertFilters } from "./client-list";
+import { CertificatesTab } from "./components/CertificatesTab";
 import { CaTab } from "./components/CaTab";
-import { MtlsRolesTab } from "@/components/mtls-roles/MtlsRolesTab";
-import { countExpiry } from "./certificate-summary";
-
-type TabId = "acme" | "imported" | "ca" | "roles";
+import { ClientCertificatesTab, IssueClientCertificateMenu } from "./components/ClientCertificatesTab";
+import { ImportCertDrawer } from "./components/ImportCertDrawer";
+import { CaCertDrawer } from "./components/CaCertDrawer";
 
 type Props = {
-  acmeHosts: AcmeHost[];
-  importedCerts: ImportedCertView[];
-  managedCerts: ManagedCertView[];
+  overview: CertificateOverview;
   caCertificates: CaCertificateView[];
-  acmePagination: { total: number; page: number; perPage: number };
-  healthyAcmeTotal: number;
-  mtlsRoles: MtlsRole[];
-  issuedClientCerts: IssuedClientCertificate[];
+  clientCertificates: IssuedClientCertificateView[];
+  mtlsRoles: MtlsRoleView[];
+  /** The certificates Caddy obtains that the list shows, with the DNS provider each one is set to. */
+  managedCertificates: ManagedCertificateView[];
+  /** The DNS providers set up under Certificate settings. */
+  dnsChoices: DnsProviderChoices;
+  /** CA certificates, client certificates and roles: hidden under a tag scope. */
+  showTrustAnchors: boolean;
+  canWrite: boolean;
+  /** Creating a certificate needs certificates:write without a tag scope. */
+  canCreateCertificate: boolean;
+  /** Shows the link to the certificate settings (ACME account, DNS providers). */
+  canReadSettings: boolean;
+  initialTab: TabId;
 };
 
+function TabCount({ value }: { value: number }) {
+  return (
+    <span className="num rounded-full bg-raise px-1.5 text-[11px] leading-[18px] font-normal text-muted-foreground">{value}</span>
+  );
+}
+
 export default function CertificatesClient({
-  acmeHosts,
-  importedCerts,
-  managedCerts,
+  overview,
   caCertificates,
-  acmePagination,
-  healthyAcmeTotal,
+  clientCertificates,
   mtlsRoles,
-  issuedClientCerts,
+  managedCertificates,
+  dnsChoices,
+  showTrustAnchors,
+  canWrite,
+  canCreateCertificate,
+  canReadSettings,
+  initialTab,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<TabId>("acme");
-  const [searchAcme, setSearchAcme] = useState("");
-  const [searchImported, setSearchImported] = useState("");
-  const [searchCa, setSearchCa] = useState("");
-  const [searchRoles, setSearchRoles] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [tab, setTab] = useState<TabId>(initialTab);
+  // false: closed; null: importing a new one; a certificate: editing it.
+  const [importDrawer, setImportDrawer] = useState<ImportedCertView | null | false>(false);
+  // The same: a new certificate Caddy obtains, or the one being edited.
+  const [managedSheet, setManagedSheet] = useState<ManagedCertificateView | null | false>(false);
+  const [caDrawer, setCaDrawer] = useState<CaCertificateView | null | false>(false);
+  const [issueFor, setIssueFor] = useState<CaCertificateView | null>(null);
+  // Kept here so a certificate authority's "Show client certificates" can set them.
+  const [clientFilters, setClientFilters] = useState<ClientCertFilters>(NO_CLIENT_CERT_FILTERS);
 
-  const importedStatuses: (CertExpiryStatus | null)[] = importedCerts.map((c) => c.expiryStatus);
-  const { expired, expiringSoon, healthy: importedHealthy } = countExpiry(importedStatuses);
-  const healthy = importedHealthy + healthyAcmeTotal;
+  const primary =
+    tab === "certificates" ? (
+      canCreateCertificate && (
+        <>
+          <Button variant="outline" onClick={() => setImportDrawer(null)}>
+            <Plus />
+            Import certificate
+          </Button>
+          <Button onClick={() => setManagedSheet(null)}>
+            <Plus />
+            New managed certificate
+          </Button>
+        </>
+      )
+    ) : tab === "authorities" ? (
+      canWrite && (
+        <Button onClick={() => setCaDrawer(null)}>
+          <Plus />
+          Add certificate authority
+        </Button>
+      )
+    ) : (
+      canWrite && <IssueClientCertificateMenu caCertificates={caCertificates} onIssue={setIssueFor} />
+    );
 
-  const search = activeTab === "acme" ? searchAcme : activeTab === "imported" ? searchImported : activeTab === "roles" ? searchRoles : searchCa;
-  const setSearch = activeTab === "acme" ? setSearchAcme : activeTab === "imported" ? setSearchImported : activeTab === "roles" ? setSearchRoles : setSearchCa;
+  const header = (tabs?: ReactNode) => (
+    <PageHeader
+      className="mb-0"
+      breadcrumb={["Traffic", "Certificates"]}
+      title="Certificates"
+      actions={
+        <>
+          {canReadSettings && (
+            <Button asChild variant="outline">
+              <Link href="/certificates/settings">
+                <SlidersHorizontal />
+                Certificate settings
+              </Link>
+            </Button>
+          )}
+          {primary}
+        </>
+      }
+    >
+      {tabs}
+    </PageHeader>
+  );
 
-  function handleTabChange(value: string) {
-    setActiveTab(value as TabId);
-    setStatusFilter(null);
-  }
+  const certificatesTab = (
+    <CertificatesTab
+      rows={overview.certificates}
+      generatedAt={overview.generatedAt}
+      canWrite={canWrite}
+      managedCertificates={managedCertificates}
+      onEditImported={(cert) => setImportDrawer(cert)}
+      onEditManaged={(cert) => setManagedSheet(cert)}
+    />
+  );
 
   return (
-    <div className="flex flex-col gap-6 w-full">
-      <PageHeader
-        title="SSL/TLS Certificates"
-        description="Caddy automatically handles HTTPS certificates via Let's Encrypt. Import custom certificates only when needed."
-      />
+    <div className="flex w-full min-w-0 flex-col gap-[18px]">
+      {showTrustAnchors ? (
+        <Tabs value={tab} onValueChange={(value) => setTab(value as TabId)} className="flex min-w-0 flex-col gap-[18px]">
+          {header(
+            <TabsList aria-label="Certificate types">
+              <TabsTrigger value="certificates">
+                Certificates <TabCount value={overview.certificates.length} />
+              </TabsTrigger>
+              <TabsTrigger value="authorities">
+                Certificate authorities <TabCount value={caCertificates.length} />
+              </TabsTrigger>
+              <TabsTrigger value="client">
+                Client certificates <TabCount value={clientCertificates.length} />
+              </TabsTrigger>
+            </TabsList>
+          )}
+          <TabsContent value="certificates" className="mt-0">
+            {certificatesTab}
+          </TabsContent>
+          <TabsContent value="authorities" className="mt-0">
+            <CaTab
+              caCertificates={caCertificates}
+              generatedAt={overview.generatedAt}
+              canWrite={canWrite}
+              onAdd={() => setCaDrawer(null)}
+              onEdit={(ca) => setCaDrawer(ca)}
+              onIssue={setIssueFor}
+              onShowClientCertificates={(ca) => {
+                setClientFilters({ ...NO_CLIENT_CERT_FILTERS, caId: ca.id });
+                setTab("client");
+              }}
+            />
+          </TabsContent>
+          <TabsContent value="client" className="mt-0">
+            <ClientCertificatesTab
+              clientCertificates={clientCertificates}
+              roles={mtlsRoles}
+              caCertificates={caCertificates}
+              generatedAt={overview.generatedAt}
+              canWrite={canWrite}
+              onIssue={setIssueFor}
+              filters={clientFilters}
+              onFiltersChange={setClientFilters}
+            />
+          </TabsContent>
+        </Tabs>
+      ) : (
+        <>
+          {header()}
+          {certificatesTab}
+        </>
+      )}
 
-      {/* Status summary filter chips */}
-      <StatusSummaryBar
-        expired={expired}
-        expiringSoon={expiringSoon}
-        healthy={healthy}
-        filter={statusFilter}
-        onFilter={setStatusFilter}
-      />
-
-      {/* Tabs + search row */}
-      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-          <TabsList className="w-fit">
-            <TabsTrigger value="acme" className="gap-1.5">
-              ACME
-              <span className="rounded-full bg-muted px-1.5 py-0 text-xs font-bold tabular-nums">
-                {acmePagination.total}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger value="imported" className="gap-1.5">
-              Imported
-              <span className="rounded-full bg-muted px-1.5 py-0 text-xs font-bold tabular-nums">
-                {importedCerts.length}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger value="ca" className="gap-1.5">
-              CA / mTLS
-              <span className="rounded-full bg-muted px-1.5 py-0 text-xs font-bold tabular-nums">
-                {caCertificates.length}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger value="roles" className="gap-1.5">
-              Roles
-              <span className="rounded-full bg-muted px-1.5 py-0 text-xs font-bold tabular-nums">
-                {mtlsRoles.length}
-              </span>
-            </TabsTrigger>
-          </TabsList>
-
-          <SearchField
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={
-              activeTab === "acme"
-                ? "Search by host or domain…"
-                : activeTab === "imported"
-                  ? "Search by name or domain…"
-                  : "Search by name…"
-            }
-            className="sm:max-w-xs"
-            aria-label="search"
-          />
-        </div>
-
-        <TabsContent value="acme" className="mt-4">
-          <AcmeTab
-            acmeHosts={acmeHosts}
-            acmePagination={acmePagination}
-            search={searchAcme}
-            statusFilter={statusFilter}
-          />
-        </TabsContent>
-        <TabsContent value="imported" className="mt-4">
-          <ImportedTab
-            importedCerts={importedCerts}
-            managedCerts={managedCerts}
-            search={searchImported}
-            statusFilter={statusFilter}
-          />
-        </TabsContent>
-        <TabsContent value="ca" className="mt-4">
-          <CaTab
-            caCertificates={caCertificates}
-            search={searchCa}
-            statusFilter={statusFilter}
-          />
-        </TabsContent>
-        <TabsContent value="roles" className="mt-4">
-          <MtlsRolesTab
-            roles={mtlsRoles}
-            issuedCerts={issuedClientCerts}
-            search={searchRoles}
-          />
-        </TabsContent>
-      </Tabs>
+      <ImportCertDrawer open={importDrawer !== false} cert={importDrawer || null} onClose={() => setImportDrawer(false)} />
+      {managedSheet !== false && (
+        <ManagedCertificateSheet open cert={managedSheet} choices={dnsChoices} onClose={() => setManagedSheet(false)} />
+      )}
+      {showTrustAnchors && (
+        <CaCertDrawer open={caDrawer !== false} cert={caDrawer || null} onClose={() => setCaDrawer(false)} />
+      )}
+      {issueFor && <IssueClientCertDialog open cert={issueFor} onClose={() => setIssueFor(null)} />}
     </div>
   );
 }

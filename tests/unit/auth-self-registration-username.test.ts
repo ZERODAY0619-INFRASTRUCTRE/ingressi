@@ -1,0 +1,273 @@
+/**
+ * Accounts Better Auth creates follow the same sign-in name rules as the rest
+ * of Ingressi. With AUTH_ALLOW_SELF_REGISTRATION=true, a registrant cannot choose
+ * a username (not another account's email, nor another case of an
+ * administrator-set name): the account gets its own email address as username
+ * when it qualifies, and none otherwise. A registration or OAuth sign-up whose
+ * email address another account signs in with is refused.
+ *
+ * Like auth-password-policy-endpoints.test.ts, this boots the real db module
+ * and the real auth-server (no better-auth stub) against a file-backed SQLite
+ * database, so the hooks run exactly as they do in production.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import bcrypt from 'bcryptjs';
+import { eq } from 'drizzle-orm';
+import { first } from '@/src/lib/db/ops';
+import { openAppDatabase, type AppDatabase } from '../helpers/app-database';
+
+let database: AppDatabase;
+
+const APP_BASE_URL = 'http://localhost:3000';
+const PASSWORD = 'Strong-Password-2026!';
+const VICTIM_PASSWORD = 'Victim-Password-2026!';
+
+type App = {
+  db: Awaited<typeof import('../../src/lib/db')>['default'];
+  schema: typeof import('../../src/lib/db/schema');
+  auth: ReturnType<Awaited<typeof import('../../src/lib/auth-server')>['getAuth']>;
+  userModel: typeof import('../../src/lib/models/user');
+};
+let app: App;
+
+beforeAll(async () => {
+  database = await openAppDatabase('ingressi-self-registration-username-');
+  // Vitest leaks Vite's BASE_URL='/' into process.env, which better-auth rejects.
+  process.env.BASE_URL = APP_BASE_URL;
+  process.env.AUTH_ALLOW_SELF_REGISTRATION = 'true';
+  process.env.AUTH_RATE_LIMIT_ENABLED = 'false';
+  vi.resetModules();
+
+  const dbModule = await import('../../src/lib/db');
+  const schema = await import('../../src/lib/db/schema');
+  const { getAuth } = await import('../../src/lib/auth-server');
+  const userModel = await import('../../src/lib/models/user');
+  app = { db: dbModule.default, schema, auth: getAuth(), userModel };
+});
+
+afterAll(async () => {
+  await database.close();
+  delete process.env.AUTH_ALLOW_SELF_REGISTRATION;
+  delete process.env.AUTH_RATE_LIMIT_ENABLED;
+  vi.resetModules();
+});
+
+type ApiCall = (args: { body: Record<string, unknown> }) => Promise<unknown>;
+const api = (name: string) => (app.auth.api as unknown as Record<string, ApiCall>)[name];
+
+type SignedUp = { user?: { id?: string; email?: string; username?: string | null } };
+
+function signUp(body: Record<string, unknown>): Promise<SignedUp> {
+  return api('signUpEmail')({ body: { password: PASSWORD, name: 'Someone', ...body } }) as Promise<SignedUp>;
+}
+
+/** The APIError a Better Auth API call rejects with. */
+async function apiError(call: Promise<unknown>) {
+  const error = await call.then(
+    () => { throw new Error('expected the call to be rejected'); },
+    (e: unknown) => e as { statusCode?: number; message?: string; body?: { message?: string } }
+  );
+  return { statusCode: error.statusCode, message: error.body?.message ?? error.message };
+}
+
+/** The user id Better Auth's username sign-in reaches, or null when it refuses. */
+async function signIn(username: string, password: string): Promise<string | null> {
+  try {
+    const result = (await api('signInUsername')({ body: { username, password } })) as { user?: { id?: string } };
+    return result.user?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function storedUsername(userId: number | string) {
+  const { db, schema } = app;
+  return await first(db.select({ username: schema.users.username, displayUsername: schema.users.displayUsername })
+    .from(schema.users).where(eq(schema.users.id, Number(userId))).limit(1));
+}
+
+async function userCount(email: string) {
+  const { db, schema } = app;
+  return (await db.select().from(schema.users).where(eq(schema.users.email, email))).length;
+}
+
+/** The way an OAuth sign-up provisions a user: no username, no password. */
+async function seedOAuthUser(email: string) {
+  const { db, schema } = app;
+  const now = new Date().toISOString();
+  const [user] = await db.insert(schema.users).values({
+    email,
+    name: null,
+    role: 'user',
+    status: 'active',
+    provider: 'dex',
+    subject: `dex-${email}`,
+    emailVerified: false,
+    createdAt: now,
+    updatedAt: now,
+  }).returning();
+  return user;
+}
+
+describe('self-registration usernames', () => {
+  it("does not store another account's email address as the registrant's username", async () => {
+    const victim = await seedOAuthUser('victim@example.com');
+
+    const attacker = await signUp({ email: 'attacker@evil.example.com', username: 'victim@example.com' });
+
+    expect(attacker.user?.username).toBe('attacker@evil.example.com');
+    expect((await storedUsername(attacker.user!.id!))?.username).toBe('attacker@evil.example.com');
+
+    // The victim's own address stays theirs to sign in with.
+    await app.userModel.changeUserPassword(victim.id, bcrypt.hashSync(VICTIM_PASSWORD, 4), null);
+    expect(await app.userModel.getPasswordSignInStatus(victim.id))
+      .toEqual({ username: 'victim@example.com', blocker: null });
+    expect(await signIn('victim@example.com', VICTIM_PASSWORD)).toBe(String(victim.id));
+    expect(await signIn('victim@example.com', PASSWORD)).toBeNull();
+    expect(await signIn('attacker@evil.example.com', PASSWORD)).toBe(attacker.user?.id);
+  });
+
+  it('ignores a chosen username or display username, in any case', async () => {
+    const bob = await app.userModel.createUser({
+      email: 'bob@example.com', provider: 'credentials', subject: 'bob', username: 'bob',
+      passwordHash: bcrypt.hashSync(VICTIM_PASSWORD, 4),
+    });
+
+    const upper = await signUp({ email: 'mallory@example.com', username: 'BOB@example.com' });
+    const display = await signUp({ email: 'trudy@example.com', displayUsername: 'Bob' });
+
+    expect(await storedUsername(upper.user!.id!)).toEqual({ username: 'mallory@example.com', displayUsername: 'mallory@example.com' });
+    expect(await storedUsername(display.user!.id!)).toEqual({ username: 'trudy@example.com', displayUsername: 'trudy@example.com' });
+    expect(await signIn('bob@example.com', PASSWORD)).toBeNull();
+    expect(await signIn('bob', PASSWORD)).toBeNull();
+    expect(await signIn('bob', VICTIM_PASSWORD)).toBe(String(bob.id));
+  });
+
+  it('signs a registrant in with their own email address, in any case', async () => {
+    const dave = await signUp({ email: 'Dave@Example.com' });
+
+    expect(dave.user?.username).toBe('dave@example.com');
+    expect(await signIn('dave@example.com', PASSWORD)).toBe(dave.user?.id);
+    expect(await signIn('DAVE@example.com', PASSWORD)).toBe(dave.user?.id);
+  });
+
+  it('gives a registrant whose email the login page refuses no username', async () => {
+    const carol = await signUp({ email: 'carol+x@example.com', username: 'carol-x@example.com' });
+
+    expect(carol.user?.username).toBeNull();
+    expect(await app.userModel.getPasswordSignInStatus(Number(carol.user?.id)))
+      .toEqual({ username: null, blocker: 'no-username' });
+    expect(await signIn('carol-x@example.com', PASSWORD)).toBeNull();
+  });
+
+  it('refuses a registration whose email address another account signs in with', async () => {
+    await app.userModel.createUser({ email: 'anna@example.com', provider: 'credentials', subject: 'anna', username: 'boss@example.com' });
+
+    const boss = await apiError(signUp({ email: 'Boss@Example.com' }));
+
+    // The reply an existing email address gets, so it does not tell a username from an address.
+    expect(boss).toEqual({ statusCode: 422, message: 'User already exists. Use another email.' });
+    expect(await userCount('boss@example.com')).toBe(0);
+  });
+
+  it('refuses the same over HTTP and does not say whether a requested username is taken', async () => {
+    await app.userModel.createUser({ email: 'owen@example.com', provider: 'credentials', subject: 'owen', username: 'owen' });
+    const post = (body: Record<string, unknown>) => app.auth.handler(new Request(`${APP_BASE_URL}/api/auth/sign-up/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: APP_BASE_URL },
+      body: JSON.stringify({ password: PASSWORD, name: 'Someone', ...body }),
+    }));
+
+    // A requested name that is taken gets no "Username is already taken" answer.
+    const taken = await post({ email: 'olivia@example.com', username: 'owen' });
+    expect(taken.status).toBe(200);
+    expect((await taken.json()).user.username).toBe('olivia@example.com');
+
+    await app.userModel.createUser({ email: 'pat@example.com', provider: 'credentials', subject: 'pat', username: 'boss2@example.com' });
+    const conflict = await post({ email: 'boss2@example.com' });
+    expect(conflict.status).toBe(422);
+    expect((await conflict.json()).message).toBe('User already exists. Use another email.');
+  });
+});
+
+describe('accounts Better Auth creates outside self-registration (OAuth sign-up)', () => {
+  type InternalAdapter = { createUser: (user: Record<string, unknown>) => Promise<{ id: string | number }> };
+  async function internalAdapter(): Promise<InternalAdapter> {
+    return ((await app.auth.$context) as unknown as { internalAdapter: InternalAdapter }).internalAdapter;
+  }
+
+  it('stores no username, whatever the profile carried', async () => {
+    await seedOAuthUser('owner@example.com');
+
+    const created = await (await internalAdapter()).createUser({
+      email: 'idp-user@example.com', name: 'IdP User', emailVerified: false, username: 'owner@example.com',
+    });
+
+    expect((await storedUsername(created.id))?.username).toBeNull();
+  });
+
+  it('refuses an email address another account signs in with', async () => {
+    await app.userModel.createUser({ email: 'zed@example.com', provider: 'credentials', subject: 'zed', username: 'chief@example.com' });
+    await app.userModel.createUser({ email: 'erin@example.com', provider: 'credentials', subject: 'erin', username: 'ops' });
+    const adapter = await internalAdapter();
+
+    await expect(adapter.createUser({ email: 'chief@example.com', name: 'Chief', emailVerified: false }))
+      .rejects.toThrow('Another account signs in with this email address as its username');
+    // The forward-auth portal would read "ops" as ops@localhost.
+    await expect(adapter.createUser({ email: 'ops@localhost', name: 'Ops', emailVerified: false }))
+      .rejects.toThrow('Email address is not allowed');
+    expect(await userCount('chief@example.com')).toBe(0);
+    expect(await userCount('ops@localhost')).toBe(0);
+  });
+
+  it('refuses an identity provider "email" that would claim a name nobody holds yet', async () => {
+    const adapter = await internalAdapter();
+    for (const email of ['root', 'newbie@localhost', 'Newbie@LOCALHOST', '@example.com', 'x@']) {
+      await expect(adapter.createUser({ email, name: 'X', emailVerified: false })).rejects.toThrow('Email address is not allowed');
+      expect(await userCount(email.toLowerCase())).toBe(0);
+    }
+  });
+});
+
+describe('disabled accounts', () => {
+  it('get no session, and a correct password is refused as a wrong one', async () => {
+    const signedUp = await signUp({ email: 'dora@example.com' });
+    const userId = Number(signedUp.user!.id);
+    const { db, schema } = app;
+    expect((await db.select().from(schema.sessions).where(eq(schema.sessions.userId, userId))).length).toBeGreaterThan(0);
+
+    await app.userModel.updateUserStatus(userId, 'disabled');
+    // Disabling ends the sessions the account has.
+    expect(await db.select().from(schema.sessions).where(eq(schema.sessions.userId, userId))).toEqual([]);
+
+    const signInWith = (password: string) => apiError(api('signInUsername')({ body: { username: 'dora@example.com', password } }));
+    const wrong = await signInWith(`${PASSWORD}-wrong`);
+    expect(await signInWith(PASSWORD)).toEqual(wrong);
+    expect(wrong).toEqual({ statusCode: 401, message: 'Invalid username or password' });
+    expect(await apiError(api('signInEmail')({ body: { email: 'dora@example.com', password: PASSWORD } })))
+      .toEqual({ statusCode: 401, message: 'Invalid email or password' });
+    expect(await db.select().from(schema.sessions).where(eq(schema.sessions.userId, userId))).toEqual([]);
+
+    await app.userModel.updateUserStatus(userId, 'active');
+    expect(await signIn('dora@example.com', PASSWORD)).toBe(String(userId));
+  });
+});
+
+describe('a username given to another account while Better Auth creates the user', () => {
+  it('is taken back from the new account, not from the other one', async () => {
+    const signedUp = await signUp({ email: 'race@example.com' });
+    const other = await app.userModel.createUser({ email: 'other-race@example.com', provider: 'credentials', subject: 'o' });
+    const { db, schema } = app;
+    // What an administrator's edit between the check and Better Auth's insert leaves.
+    await db.update(schema.users).set({ username: 'race@example.com' }).where(eq(schema.users.id, other.id));
+
+    await app.userModel.releaseContestedSignInUsername(Number(signedUp.user!.id));
+
+    expect((await storedUsername(signedUp.user!.id!))?.username).toBeNull();
+    expect((await storedUsername(other.id))?.username).toBe('race@example.com');
+    // Nothing contested: nothing changes.
+    const alone = await signUp({ email: 'alone@example.com' });
+    await app.userModel.releaseContestedSignInUsername(Number(alone.user!.id));
+    expect((await storedUsername(alone.user!.id!))?.username).toBe('alone@example.com');
+  });
+});

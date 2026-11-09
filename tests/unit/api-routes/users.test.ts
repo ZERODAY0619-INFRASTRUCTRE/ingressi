@@ -2,11 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/src/lib/models/user', () => ({
   listUsers: vi.fn(),
+  createUser: vi.fn(),
   getUserById: vi.fn(),
-  updateUserProfile: vi.fn(),
+  updateUserAccount: vi.fn(),
   updateUserRole: vi.fn(),
+  setUserRoleAssignment: vi.fn(),
   updateUserStatus: vi.fn(),
   deleteUser: vi.fn(),
+}));
+
+vi.mock('@/ee/sso/enforcement-store', () => ({
+  assertBreakGlassAdminRemains: vi.fn(),
 }));
 
 vi.mock('@/src/lib/api-auth', () => {
@@ -15,8 +21,14 @@ vi.mock('@/src/lib/api-auth', () => {
     constructor(msg: string, status: number) { super(msg); this.status = status; this.name = 'ApiAuthError'; }
   };
   return {
+    requireApiPermission: vi.fn((request: unknown) => import('@/tests/helpers/permission-mocks').then((m) => m.viaRequireApiAdmin(request))),
     requireApiAdmin: vi.fn().mockResolvedValue({ userId: 1, role: 'admin', authMethod: 'bearer' }),
     requireApiUser: vi.fn().mockResolvedValue({ userId: 1, role: 'admin', authMethod: 'bearer' }),
+    // The built-in role's access, as the real getApiAccess builds it.
+    getApiAccess: vi.fn((result: { userId: number; role: string }) => ({
+      userId: result.userId, role: result.role, isAdmin: result.role === 'admin', customRole: null,
+      permissions: new Set(), scopeTags: [],
+    })),
     apiErrorResponse: vi.fn((error: unknown) => {
       const { NextResponse: NR } = require('next/server');
       if (error instanceof ApiAuthError) {
@@ -28,14 +40,14 @@ vi.mock('@/src/lib/api-auth', () => {
   };
 });
 
-import { GET as listGET } from '@/app/api/v1/users/route';
+import { GET as listGET, POST as createPOST } from '@/app/api/v1/users/route';
 import { GET as getGET, PUT } from '@/app/api/v1/users/[id]/route';
-import { listUsers, getUserById, updateUserProfile } from '@/src/lib/models/user';
+import { listUsers, createUser, getUserById, updateUserAccount, updateUserRole, updateUserStatus } from '@/src/lib/models/user';
 import { requireApiAdmin, requireApiUser } from '@/src/lib/api-auth';
 
 const mockListUsers = vi.mocked(listUsers);
 const mockGetUserById = vi.mocked(getUserById);
-const mockUpdateUserProfile = vi.mocked(updateUserProfile);
+const mockUpdateUserAccount = vi.mocked(updateUserAccount);
 const mockRequireApiAdmin = vi.mocked(requireApiAdmin);
 const mockRequireApiUser = vi.mocked(requireApiUser);
 
@@ -136,7 +148,7 @@ describe('PUT /api/v1/users/[id]', () => {
   it('updates a user profile', async () => {
     const body = { name: 'Updated Name' };
     const updated = { ...sampleUser, name: 'Updated Name' };
-    mockUpdateUserProfile.mockResolvedValue(updated as any);
+    mockUpdateUserAccount.mockResolvedValue({ user: updated, previousUsername: null } as any);
     mockGetUserById.mockResolvedValue(updated as any);
 
     const response = await PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ id: '1' }) });
@@ -145,10 +157,89 @@ describe('PUT /api/v1/users/[id]', () => {
     expect(response.status).toBe(200);
     expect(data.name).toBe('Updated Name');
     expect(data).not.toHaveProperty('passwordHash');
-    expect(mockUpdateUserProfile).toHaveBeenCalledWith(1, { name: 'Updated Name' });
+    expect(mockUpdateUserAccount).toHaveBeenCalledWith(1, { name: 'Updated Name' });
+  });
+
+  it('leaves the username alone when the body has none', async () => {
+    mockUpdateUserAccount.mockResolvedValue({ user: sampleUser, previousUsername: null } as any);
+    mockGetUserById.mockResolvedValue(sampleUser as any);
+
+    const response = await PUT(
+      createMockRequest({ method: 'PUT', body: { name: 'X', email: 'x@example.com' } }),
+      { params: Promise.resolve({ id: '2' }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateUserAccount).toHaveBeenCalledWith(2, { name: 'X', email: 'x@example.com' });
+  });
+
+  it('treats username null as no change, so a GET body can be sent back', async () => {
+    mockUpdateUserAccount.mockResolvedValue({ user: sampleUser, previousUsername: null } as any);
+    mockGetUserById.mockResolvedValue(sampleUser as any);
+
+    const response = await PUT(
+      createMockRequest({ method: 'PUT', body: { username: null, name: 'X', email: 'x@example.com' } }),
+      { params: Promise.resolve({ id: '2' }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateUserAccount).toHaveBeenCalledWith(2, { name: 'X', email: 'x@example.com' });
+  });
+
+  it('refuses a username that is not a string before changing anything', async () => {
+    const response = await PUT(
+      createMockRequest({ method: 'PUT', body: { username: ['alice'], role: 'viewer', name: 'X' } }),
+      { params: Promise.resolve({ id: '2' }) }
+    );
+
+    expect(response.status).toBe(400);
+    expect(vi.mocked(updateUserRole)).not.toHaveBeenCalled();
+    expect(mockUpdateUserAccount).not.toHaveBeenCalled();
+  });
+
+  it.each([{ role: 'viewer' }, { status: 'disabled' }])(
+    "refuses a change to the caller's own %j before writing anything",
+    async (change) => {
+      const response = await PUT(
+        createMockRequest({ method: 'PUT', body: { username: 'root', name: 'X', ...change } }),
+        { params: Promise.resolve({ id: '1' }) }
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockUpdateUserAccount).not.toHaveBeenCalled();
+      expect(vi.mocked(updateUserRole)).not.toHaveBeenCalled();
+      expect(vi.mocked(updateUserStatus)).not.toHaveBeenCalled();
+    }
+  );
+
+  it('does not change the role or status when the username or email is refused', async () => {
+    mockUpdateUserAccount.mockRejectedValue(new Error('refused'));
+
+    const response = await PUT(
+      createMockRequest({ method: 'PUT', body: { username: 'taken', role: 'viewer', status: 'disabled' } }),
+      { params: Promise.resolve({ id: '2' }) }
+    );
+
+    expect(response.status).toBe(500);
+    expect(vi.mocked(updateUserRole)).not.toHaveBeenCalled();
+    expect(vi.mocked(updateUserStatus)).not.toHaveBeenCalled();
+  });
+
+  it('does not let a non-admin set a username', async () => {
+    const { ApiAuthError } = await import('@/src/lib/api-auth');
+    mockRequireApiAdmin.mockRejectedValue(new ApiAuthError('Administrator privileges required', 403));
+
+    const response = await PUT(
+      createMockRequest({ method: 'PUT', body: { username: 'alice' } }),
+      { params: Promise.resolve({ id: '1' }) }
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockUpdateUserAccount).not.toHaveBeenCalled();
   });
 
   it('returns 404 when updating non-existent user', async () => {
+    mockUpdateUserAccount.mockResolvedValue(null);
     mockGetUserById.mockResolvedValue(null as any);
 
     const response = await PUT(createMockRequest({ method: 'PUT', body: { name: 'X' } }), { params: Promise.resolve({ id: '999' }) });
@@ -156,5 +247,27 @@ describe('PUT /api/v1/users/[id]', () => {
 
     expect(response.status).toBe(404);
     expect(data.error).toBe('Not found');
+  });
+});
+
+describe('POST /api/v1/users password policy', () => {
+  it.each(['x', 'alllowercase1!', 'NoDigitsHere!!', 'NoSpecial12345', 'Sh0rt!'])(
+    'rejects a weak password (%s)',
+    async (password) => {
+      const response = await createPOST(
+        createMockRequest({ method: 'POST', body: { email: 'new@example.com', password, role: 'admin' } })
+      );
+      expect(response.status).toBe(400);
+      expect(vi.mocked(createUser)).not.toHaveBeenCalled();
+    }
+  );
+
+  it('creates a user with a compliant password', async () => {
+    vi.mocked(createUser).mockResolvedValue({ ...sampleUser, id: 2, email: 'new@example.com' } as any);
+    const response = await createPOST(
+      createMockRequest({ method: 'POST', body: { email: 'new@example.com', password: 'Compliant-Pass-2026' } })
+    );
+    expect(response.status).toBe(201);
+    expect(await response.json()).not.toHaveProperty('passwordHash');
   });
 });

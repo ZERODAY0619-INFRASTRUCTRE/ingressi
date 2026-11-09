@@ -1,7 +1,12 @@
 import { isIP } from "node:net";
-import { bodyLimitRangeMessage, findInvalidBodyLimitDirective, isValidBodyLimit } from "./caddy-waf";
+import { bodyLimitRangeMessage, customDirectivesError, isValidBodyLimit } from "./caddy-waf";
 import { normalizeDefaultResponseSettings } from "./caddy-default-response";
 import { getProviderDefinition, isValidDnsDuration } from "./dns-providers";
+import { normalizeRateLimitSettings } from "./caddy-rate-limit";
+import { normalizeResponseHeadersSettings, ResponseHeadersValidationError } from "./caddy-response-headers";
+import { normalizeProxyProtocolRanges } from "./proxy-protocol";
+import { ApiValidationError } from "./api-errors";
+import { WAF_TUNING_KEYS, wafTuningError } from "./waf-tuning";
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -168,7 +173,7 @@ function validateGeneral(value: Record<string, unknown>): void {
   stringValue(required(value, "primaryDomain", "general settings"), "general.primaryDomain", { min: 1, max: 253 });
   if (value.acmeEmail !== undefined) {
     const email = stringValue(value.acmeEmail, "general.acmeEmail", { max: 320 });
-    if (email.length > 0 && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) invalid("general.acmeEmail must be a valid email address");
+    if (email.length > 0 && !/^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(email)) invalid("general.acmeEmail must be a valid email address");
   }
 }
 
@@ -194,6 +199,17 @@ function validateAuthentik(value: Record<string, unknown>): void {
   optionalString(value, "authEndpoint", "authentik", 4096);
 }
 
+function validateForwardAuth(value: Record<string, unknown>): void {
+  onlyKeys(value, ["provider", "authUpstream", "authEndpoint"], "Forward Auth settings");
+  const provider = required(value, "provider", "Forward Auth settings");
+  if (provider !== "authelia" && provider !== "custom") {
+    invalid("forward_auth.provider must be 'authelia' or 'custom'");
+  }
+  const upstream = stringValue(required(value, "authUpstream", "Forward Auth settings"), "forward_auth.authUpstream", { min: 1, max: 4096 });
+  httpUrl(upstream, "forward_auth.authUpstream");
+  optionalString(value, "authEndpoint", "forward_auth", 4096);
+}
+
 function validateMetrics(value: Record<string, unknown>): void {
   onlyKeys(value, ["enabled", "port"], "metrics settings");
   booleanValue(required(value, "enabled", "metrics settings"), "metrics.enabled");
@@ -208,8 +224,9 @@ function validateLogging(value: Record<string, unknown>): void {
   }
 }
 
-function validateTrustedProxies(value: Record<string, unknown>): void {
-  onlyKeys(value, ["ranges", "client_ip_headers", "strict", "default_geoblock"], "trusted proxy settings");
+/** Returns the settings to store: the PROXY protocol sources normalized, the rest as given. */
+function validateTrustedProxies(value: Record<string, unknown>): Record<string, unknown> {
+  onlyKeys(value, ["ranges", "client_ip_headers", "strict", "default_geoblock", "proxy_protocol_ranges"], "trusted proxy settings");
   stringList(required(value, "ranges", "trusted proxy settings"), "trusted-proxies.ranges", (item, label) => ipOrCidr(item, label, true));
   if (value.client_ip_headers !== undefined) {
     stringList(value.client_ip_headers, "trusted-proxies.client_ip_headers", (item, label) => {
@@ -218,6 +235,11 @@ function validateTrustedProxies(value: Record<string, unknown>): void {
   }
   optionalBoolean(value, "strict", "trusted-proxies");
   optionalBoolean(value, "default_geoblock", "trusted-proxies");
+  if (value.proxy_protocol_ranges === undefined) return value;
+  if (!Array.isArray(value.proxy_protocol_ranges)) invalid("trusted-proxies.proxy_protocol_ranges must be an array");
+  const proxyProtocol = normalizeProxyProtocolRanges(value.proxy_protocol_ranges);
+  if ("error" in proxyProtocol) invalid(`trusted-proxies.proxy_protocol_ranges: ${proxyProtocol.error}`);
+  return { ...value, proxy_protocol_ranges: proxyProtocol.values };
 }
 
 function validateDns(value: Record<string, unknown>): void {
@@ -310,7 +332,10 @@ function validateGeoBlock(value: Record<string, unknown>): void {
   httpUrl(redirect, "geoblock.redirect_url", true);
 }
 
-function validateWaf(value: Record<string, unknown>): void {
+/** The stored global WAF settings an update replaces. */
+export type PreviousWafSettings = { custom_directives?: string | null; load_owasp_crs?: boolean } | null;
+
+function validateWaf(value: Record<string, unknown>, previous: PreviousWafSettings): void {
   onlyKeys(
     value,
     [
@@ -322,6 +347,7 @@ function validateWaf(value: Record<string, unknown>): void {
       "request_body_limit",
       "request_body_in_memory_limit",
       "request_body_limit_action",
+      ...WAF_TUNING_KEYS,
     ],
     "WAF settings"
   );
@@ -330,13 +356,27 @@ function validateWaf(value: Record<string, unknown>): void {
   if (mode !== "Off" && mode !== "On" && mode !== "DetectionOnly") {
     invalid("waf.mode must be Off, On, or DetectionOnly");
   }
+  const tuningError = wafTuningError(value);
+  if (tuningError) invalid(tuningError);
   booleanValue(required(value, "load_owasp_crs", "WAF settings"), "waf.load_owasp_crs");
   const directives = stringValue(required(value, "custom_directives", "WAF settings"), "waf.custom_directives", { max: 100_000, controls: true });
-  const badDirective = findInvalidBodyLimitDirective(directives);
-  if (badDirective) {
-    invalid(`waf.custom_directives has an out-of-range body limit: "${badDirective}" — ${bodyLimitRangeMessage("the byte count")}`);
+  // Only lines this update newly drops are rejected, as in the dashboard form:
+  // a stored rule that a later release started dropping must not block
+  // unrelated changes (buildWafHandler still leaves it out and logs it).
+  const directiveError = customDirectivesError(
+    directives,
+    { crsLoaded: value.load_owasp_crs === true },
+    previous
+      ? { directives: previous.custom_directives, options: { crsLoaded: Boolean(previous.load_owasp_crs) } }
+      : undefined
+  );
+  if (directiveError) invalid(directiveError);
+  // Each listed id becomes an exclusion record (src/lib/models/waf-exclusions.ts), whose ids are Int32.
+  if (value.excluded_rule_ids !== undefined) {
+    const ids = value.excluded_rule_ids;
+    if (!Array.isArray(ids) || ids.length > MAX_LIST_ITEMS) invalid("waf.excluded_rule_ids must be an array");
+    ids.forEach((item, index) => integerValue(item, `waf.excluded_rule_ids[${index}]`, 1, 2_147_483_647));
   }
-  if (value.excluded_rule_ids !== undefined) validateNumberList(value.excluded_rule_ids, "waf.excluded_rule_ids");
   validateBodyLimits(value, "waf");
 }
 
@@ -378,9 +418,28 @@ function validateErrorPages(value: Record<string, unknown>): void {
   });
 }
 
+/** Strict, like every other group; saveRateLimitSettings stores the normalized form. */
+function validateRateLimit(value: Record<string, unknown>): void {
+  try {
+    normalizeRateLimitSettings(value, "rate-limit");
+  } catch (error) {
+    if (error instanceof ApiValidationError) invalid(error.message);
+    throw error;
+  }
+}
+
 function validateDefaultResponse(value: Record<string, unknown>): void {
   onlyKeys(value, ["mode", "status", "body", "headers", "redirectUrl"], "default response settings");
   normalizeDefaultResponseSettings(value);
+}
+
+function validateResponseHeaders(value: Record<string, unknown>): void {
+  try {
+    normalizeResponseHeadersSettings(value);
+  } catch (error) {
+    if (error instanceof ResponseHeadersValidationError) invalid(error.message);
+    throw error;
+  }
 }
 
 export function assertSettingsPayloadSize(input: unknown): void {
@@ -396,7 +455,11 @@ export function assertSettingsPayloadSize(input: unknown): void {
 }
 
 /** Strict runtime validation for REST settings writes. */
-export function validateSettingsGroup(group: string, input: unknown): unknown {
+export function validateSettingsGroup(
+  group: string,
+  input: unknown,
+  { previousWaf = null }: { previousWaf?: PreviousWafSettings } = {}
+): unknown {
   assertSettingsPayloadSize(input);
 
   const value = record(input, `${group} settings`);
@@ -405,16 +468,19 @@ export function validateSettingsGroup(group: string, input: unknown): unknown {
     case "acme": validateAcme(value); break;
     case "cloudflare": validateCloudflare(value); break;
     case "authentik": validateAuthentik(value); break;
+    case "forward-auth": validateForwardAuth(value); break;
     case "metrics": validateMetrics(value); break;
     case "logging": validateLogging(value); break;
-    case "trusted-proxies": validateTrustedProxies(value); break;
+    case "trusted-proxies": return validateTrustedProxies(value);
     case "dns": validateDns(value); break;
     case "dns-provider": validateDnsProvider(value); break;
     case "upstream-dns": validateUpstreamDns(value); break;
     case "geoblock": validateGeoBlock(value); break;
-    case "waf": validateWaf(value); break;
+    case "waf": validateWaf(value, previousWaf); break;
     case "error-pages": validateErrorPages(value); break;
     case "default-response": validateDefaultResponse(value); break;
+    case "rate-limit": validateRateLimit(value); break;
+    case "response-headers": validateResponseHeaders(value); break;
     default: invalid("Unknown settings group");
   }
   return input;

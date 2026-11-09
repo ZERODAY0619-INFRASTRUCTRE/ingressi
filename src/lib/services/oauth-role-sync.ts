@@ -1,4 +1,5 @@
-import db from "../db";
+import { appDb as db } from "../db";
+import { first } from "../db/ops";
 import { accounts, oauthProviders, users, auditEvents } from "../db/schema";
 import { and, eq } from "drizzle-orm";
 import { config } from "../config";
@@ -41,29 +42,29 @@ export async function syncOAuthRoleFromClaims(account: {
   id: string | number; userId: string | number; providerId: string;
 }): Promise<void> {
   if (!config.auth.allowOauthRoleFromClaims || account.providerId === "credential") return;
-  const provider = db.select().from(oauthProviders)
-    .where(and(eq(oauthProviders.id, account.providerId), eq(oauthProviders.enabled, true))).get();
+  const provider = await first(db.select().from(oauthProviders)
+    .where(and(eq(oauthProviders.id, account.providerId), eq(oauthProviders.enabled, true))));
   if (!provider) return;
   const userId = Number(account.userId);
-  const stored = db.select().from(accounts).where(and(
+  const stored = await first(db.select().from(accounts).where(and(
     eq(accounts.id, Number(account.id)), eq(accounts.userId, userId),
     eq(accounts.providerId, provider.id),
     eq(accounts.issuer, resolveOAuthAccountIssuer(provider.id, provider.issuer)),
-  )).get();
+  )));
   if (!stored?.accessToken) throw new Error("OAuth role sync requires a persisted authenticated account");
   const role = await fetchOAuthRole(provider, {
     accountId: stored.accountId, accessToken: decryptSecret(stored.accessToken),
   });
-  db.transaction((tx) => {
-    const user = tx.select().from(users).where(eq(users.id, userId)).get();
+  await db.transaction(async (tx) => {
+    const user = await first(tx.select().from(users).where(eq(users.id, userId)));
     if (!user) throw new Error("OAuth role sync user is missing");
     if (user.role === role) return;
     const now = new Date().toISOString();
-    tx.update(users).set({ role, updatedAt: now }).where(eq(users.id, userId)).run();
-    tx.insert(auditEvents).values({
+    await tx.update(users).set({ role, updatedAt: now }).where(eq(users.id, userId));
+    await tx.insert(auditEvents).values({
       userId, action: "oauth_role_sync", entityType: "user", entityId: userId,
       summary: `Synced role from OAuth provider ${provider.id}: ${user.role} -> ${role}`,
       createdAt: now,
-    }).run();
+    });
   });
 }

@@ -255,6 +255,52 @@ describe("DNS provider registry", () => {
     });
   });
 
+  it("registers INWX with the Caddy module path and credential fields", () => {
+    const provider = getProviderDefinition("inwx");
+
+    expect(provider).toMatchObject({
+      name: "inwx",
+      displayName: "INWX",
+      docsUrl: "https://github.com/caddy-dns/inwx",
+      modulePath: "github.com/caddy-dns/inwx",
+    });
+    expect(provider?.fields).toEqual([
+      { key: "username", label: "Username", type: "string", required: true },
+      { key: "password", label: "Password", type: "password", required: true },
+      { key: "shared_secret", label: "2FA Shared Secret", type: "password", required: false },
+      { key: "endpoint_url", label: "Endpoint URL", type: "string", required: false },
+      ...challengeOptionFields(),
+    ]);
+    expect(DNS_PROVIDERS.map((p) => p.name)).toContain("inwx");
+  });
+
+  it("registers Bunny with the Caddy module path and API access key field", () => {
+    const provider = getProviderDefinition("bunny");
+
+    expect(provider).toMatchObject({
+      name: "bunny",
+      displayName: "Bunny",
+      docsUrl: "https://github.com/caddy-dns/bunny",
+      modulePath: "github.com/caddy-dns/bunny",
+    });
+    expect(provider?.fields).toEqual([
+      { key: "access_key", label: "API Access Key", type: "password", required: true },
+      ...challengeOptionFields(),
+    ]);
+    expect(DNS_PROVIDERS.map((p) => p.name)).toContain("bunny");
+  });
+
+  it("encrypts, decrypts, and emits Bunny credentials for Caddy DNS challenges", () => {
+    const encrypted = encryptProviderCredentials("bunny", { access_key: "bunny-key" });
+
+    expect(isEncryptedSecret(encrypted.access_key)).toBe(true);
+    expect(decryptProviderCredentials("bunny", encrypted)).toEqual({ access_key: "bunny-key" });
+    expect(buildDnsChallengeConfig("bunny", encrypted, ["1.1.1.1"])).toEqual({
+      provider: { name: "bunny", access_key: "bunny-key" },
+      resolvers: ["1.1.1.1"],
+    });
+  });
+
   it("registers Infomaniak with the Caddy module path and API token field", () => {
     const provider = getProviderDefinition("infomaniak");
 
@@ -407,6 +453,55 @@ describe("DNS provider registry", () => {
         sub_auth_id: "5678",
         auth_password: "cloudns-password",
       },
+    });
+  });
+
+  it("registers RFC2136 with the Caddy module path and TSIG credential fields", () => {
+    const provider = getProviderDefinition("rfc2136");
+
+    expect(provider).toMatchObject({
+      name: "rfc2136",
+      displayName: "RFC2136 (BIND / TSIG)",
+      docsUrl: "https://github.com/caddy-dns/rfc2136",
+      modulePath: "github.com/caddy-dns/rfc2136",
+    });
+    expect(provider?.fields).toEqual([
+      { key: "key_name", label: "TSIG Key Name", type: "string", required: true, placeholder: "my-transfer-key", description: "Name of the TSIG key as defined on the DNS server (miND/domain form accepted)." },
+      { key: "key_alg", label: "TSIG Algorithm", type: "string", required: true, placeholder: "hmac-sha256", description: "HMAC algorithm of the TSIG key, e.g. hmac-sha256, hmac-sha512, or hmac-md5." },
+      { key: "key", label: "TSIG Key Secret", type: "password", required: true, placeholder: "base64 secret", description: "The base64-encoded TSIG shared secret (from the key statement or `tsig-keygen`)." },
+      { key: "server", label: "DNS Server", type: "string", required: true, placeholder: "1.2.3.4:53", description: "Authoritative DNS server address that accepts RFC 2136 dynamic updates (host:port)." },
+      ...challengeOptionFields(),
+    ]);
+    expect(DNS_PROVIDERS.map((p) => p.name)).toContain("rfc2136");
+  });
+
+  it("encrypts, decrypts, and emits RFC2136 credentials for Caddy DNS challenges", () => {
+    const encrypted = encryptProviderCredentials("rfc2136", {
+      key_name: "transfer-key",
+      key_alg: "hmac-sha256",
+      key: "cWnu6Ju9zOki4f7Q+da2KKGo0KOXbCf6Pej6hW3geC4=",
+      server: "1.2.3.4:53",
+    });
+
+    expect(isEncryptedSecret(encrypted.key)).toBe(true);
+    expect(isEncryptedSecret(encrypted.key_name)).toBe(false);
+    expect(isEncryptedSecret(encrypted.key_alg)).toBe(false);
+    expect(isEncryptedSecret(encrypted.server)).toBe(false);
+    expect(decryptProviderCredentials("rfc2136", encrypted)).toEqual({
+      key_name: "transfer-key",
+      key_alg: "hmac-sha256",
+      key: "cWnu6Ju9zOki4f7Q+da2KKGo0KOXbCf6Pej6hW3geC4=",
+      server: "1.2.3.4:53",
+    });
+    expect(buildDnsChallengeConfig("rfc2136", encrypted, ["1.1.1.1"])).toEqual({
+      provider: {
+        name: "rfc2136",
+        key_name: "transfer-key",
+        key_alg: "hmac-sha256",
+        key: "cWnu6Ju9zOki4f7Q+da2KKGo0KOXbCf6Pej6hW3geC4=",
+        server: "1.2.3.4:53",
+      },
+      resolvers: ["1.1.1.1"],
     });
   });
 

@@ -1,16 +1,65 @@
+import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { randomBytes } from "node:crypto";
-import db from "@/src/lib/db";
+import { appDb } from "@/src/lib/db";
 import { config } from "@/src/lib/config";
+import { FORWARD_AUTH_CALLBACK_PATH } from "@/src/lib/forward-auth-trust";
 import {
   createForwardAuthSession,
   createExchangeCode,
   checkHostAccess,
-  consumeRedirectIntent
+  consumeRedirectIntent,
+  isRedirectIntentUsable
 } from "@/src/lib/models/forward-auth";
 import { logAuditEvent } from "@/src/lib/audit";
-import { isRateLimited, registerFailedAttempt, resetAttempts } from "@/src/lib/rate-limit";
+import { getClientIp } from "@/src/lib/client-ip";
+import { getUserPasswordHash } from "@/src/lib/models/user";
+import { beginPortalLoginAttempt } from "@/src/lib/forward-auth-login-limiter";
+import { findPortalAccount } from "@/src/lib/sign-in-names";
+
+// Compared against when the account does not exist, is inactive or has no
+// password, so those cases take as long to reject as a wrong password. A cost-12
+// hash (the cost used for real accounts) of a discarded random 64-character
+// string, precomputed so no request pays for generating it.
+const DUMMY_PASSWORD_HASH = "$2b$12$PzXbwkFBGk6JwDDBJVq5wulZ85qKnoUuxbl8638n85GUpYyLE61Aa";
+
+// The form posts a username, a password and a rid; anything larger is not a login.
+const MAX_BODY_BYTES = 16 * 1024;
+const MAX_USERNAME_LENGTH = 256;
+
+/** Reads the request body as text, or returns null once it exceeds MAX_BODY_BYTES. */
+async function readBodyText(request: NextRequest): Promise<string | null> {
+  if (Number(request.headers.get("content-length")) > MAX_BODY_BYTES) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/**
+ * Looks up the account (by sign-in username, email address or portal name, see
+ * findPortalAccount) and checks the password. Runs exactly one bcrypt compare
+ * whether or not the account can sign in, so every rejection takes about as
+ * long.
+ */
+async function checkCredentials(username: string, password: string) {
+  const user = await findPortalAccount(appDb, username);
+  const usable = user && user.status === "active";
+  const passwordHash = usable ? await getUserPasswordHash(user) : null;
+  const isValid = await bcrypt.compare(password, passwordHash ?? DUMMY_PASSWORD_HASH);
+  return { user, valid: Boolean(passwordHash) && isValid };
+}
 
 /**
  * Forward auth login endpoint — validates credentials and starts the exchange flow.
@@ -18,14 +67,24 @@ import { isRateLimited, registerFailedAttempt, resetAttempts } from "@/src/lib/r
  */
 export async function POST(request: NextRequest) {
   try {
-    // CSRF: verify the request originates from the CPM portal
+    // CSRF: verify the request originates from the dashboard portal
     const origin = request.headers.get("origin");
     const baseOrigin = new URL(config.baseUrl).origin;
     if (!origin || origin !== baseOrigin) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const body = await request.json();
+    const text = await readBodyText(request);
+    if (text === null) {
+      return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      body = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
     const username = typeof body.username === "string" ? body.username.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
     const rid = typeof body.rid === "string" ? body.rid : "";
@@ -33,56 +92,51 @@ export async function POST(request: NextRequest) {
     if (!username || !password) {
       return NextResponse.json({ error: "Username and password are required" }, { status: 400 });
     }
+    if (username.length > MAX_USERNAME_LENGTH) {
+      return NextResponse.json({ error: "Username is too long" }, { status: 400 });
+    }
     if (!rid) {
       return NextResponse.json({ error: "Missing redirect intent" }, { status: 400 });
     }
 
-    // Rate limiting — prefer x-real-ip (set by reverse proxy) over x-forwarded-for
-    const ip =
-      request.headers.get("x-real-ip")?.trim() ||
-      request.headers.get("x-forwarded-for")?.split(",").pop()?.trim() ||
-      "unknown";
-    const rateLimitKey = `account:${username.toLowerCase()}`;
-    const rateLimitResult = isRateLimited(rateLimitKey);
-    if (rateLimitResult.blocked) {
+    // Reject an unusable intent before touching the credentials, so this
+    // response never depends on whether the password was right.
+    if (!(await isRedirectIntentUsable(rid))) {
+      return NextResponse.json({ error: "Invalid or expired redirect intent. Please try again." }, { status: 400 });
+    }
+
+    // Rate limit per client, per (account, client) and per account (a higher
+    // ceiling); any one blocks. The attempt holds its place in each limit
+    // until its outcome is recorded, so concurrent requests cannot all slip
+    // past the check.
+    const attempt = await beginPortalLoginAttempt(username, getClientIp(request.headers));
+    if (!attempt) {
       return NextResponse.json(
         { error: "Too many login attempts. Please try again later." },
         { status: 429 }
       );
     }
 
-    // Authenticate using the same logic as the credentials provider
-    const email = `${username}@localhost`;
-    const user = await db.query.users.findFirst({
-      where: (table, operators) => operators.eq(table.email, email)
-    });
-
-    if (!user || user.status !== "active" || !user.passwordHash) {
-      registerFailedAttempt(rateLimitKey);
-      logAuditEvent({
-        userId: null,
+    let credentials: Awaited<ReturnType<typeof checkCredentials>>;
+    try {
+      credentials = await checkCredentials(username, password);
+    } catch (error) {
+      await attempt.release();
+      throw error;
+    }
+    const { user, valid } = credentials;
+    if (!user || !valid) {
+      await attempt.fail();
+      await logAuditEvent({
+        userId: user?.id ?? null,
         action: "forward_auth_login_failed",
         entityType: "user",
-        summary: `Forward auth login failed for username: ${username}`
+        ...(user ? { entityId: user.id } : {}),
+        summary: `Forward auth login failed for username: ${username.slice(0, 64)}`
       });
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
-
-    const isValid = await bcrypt.compare(password, user.passwordHash);
-    if (!isValid) {
-      registerFailedAttempt(rateLimitKey);
-      logAuditEvent({
-        userId: user.id,
-        action: "forward_auth_login_failed",
-        entityType: "user",
-        entityId: user.id,
-        summary: `Forward auth login failed for user ${user.email}`
-      });
-      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
-    }
-
-    // Successful credential check — reset rate limiter for this IP
-    resetAttempts(rateLimitKey);
+    await attempt.succeed();
 
     // Consume the redirect intent — returns the server-stored redirect URI.
     // This is a one-time operation: the intent is deleted after consumption.
@@ -98,7 +152,7 @@ export async function POST(request: NextRequest) {
     // to silently change the authorization target mid-flow.
     const hasAccess = await checkHostAccess(user.id, intent.audience.proxyHostId);
     if (!hasAccess) {
-      logAuditEvent({
+      await logAuditEvent({
         userId: user.id,
         action: "forward_auth_access_denied",
         entityType: "proxy_host",
@@ -118,7 +172,7 @@ export async function POST(request: NextRequest) {
       intent.audience,
     );
 
-    logAuditEvent({
+    await logAuditEvent({
       userId: user.id,
       action: "forward_auth_login",
       entityType: "user",
@@ -127,7 +181,7 @@ export async function POST(request: NextRequest) {
     });
 
     // Build callback URL on the target domain
-    const callbackUrl = new URL("/.cpm-auth/callback", intent.audience.origin);
+    const callbackUrl = new URL(FORWARD_AUTH_CALLBACK_PATH, intent.audience.origin);
     callbackUrl.searchParams.set("code", rawCode);
     const browserNonce = randomBytes(32).toString("hex");
     callbackUrl.searchParams.set("nonce", browserNonce);

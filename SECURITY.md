@@ -1,81 +1,89 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-We release patches for security vulnerabilities for the following versions:
+| Version | Security fixes |
+| ------- | -------------- |
+| Latest release | :white_check_mark: |
+| Earlier releases | :x: |
 
-| Version | Supported          |
-| ------- | ------------------ |
-| latest  | :white_check_mark: |
-| < 1.0   | :x:                |
+- Fixes ship as a new release of the latest version. A release that fixes a vulnerability contains only that fix and what it needs, where possible.
+- To upgrade: `docker compose pull && docker compose up -d`.
+- Earlier releases stay on GitHub and in the registry for reference. They get no fixes: running them is a security risk.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-If you discover a security vulnerability, please report it by:
+Do not open a public issue. Report it:
 
-1. **DO NOT** open a public issue
-2. Email the maintainers or use GitHub's private vulnerability reporting
-3. Include detailed information about the vulnerability:
-   - Type of vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Suggested fix (if any)
+- through GitHub's private vulnerability reporting: <https://github.com/ingres-si/ingressi/security/advisories/new>; or
+- by e-mail to security@ingres.si.
 
-We will respond within 48 hours and provide regular updates on the fix progress.
+English or Italian. Include the type of vulnerability, the affected version, steps to reproduce, the impact you see and a fix if you have one.
 
-## Security Measures
+We answer within 48 hours, confirm or dismiss the issue within 5 working days, and keep you updated until it is fixed. The same contacts are in <https://ingres.si/.well-known/security.txt> (RFC 9116).
 
-### Build Pipeline Security
+### Disclosure policy
 
-Our CI/CD pipeline implements multiple security layers:
+- We follow coordinated disclosure. Keep the details private until a fix is released or 90 days have passed since your report, whichever comes first; if a fix needs more time, we agree it with you.
+- We fix the issue on the latest release and publish a GitHub Security Advisory, with a CVE when the issue warrants one: <https://github.com/ingres-si/ingressi/security/advisories>. Advisories also reach the GitHub Advisory Database and OSV in machine-readable form.
+- Reporters are credited in the advisory unless they prefer not to be.
+- Testing must stay within installations you own or are authorised to test. Do not access other people's data or degrade services.
 
-1. **Fork PR Protection**: Pull requests from forks require manual approval (via `safe-to-build` label) before builds run
-2. **SBOM Generation**: Software Bill of Materials is generated for all builds
-3. **Provenance Attestation**: Build provenance is recorded for supply chain security
-4. **Limited Permissions**: Workflows use minimal required permissions
-5. **No Push from PRs**: Pull requests only build images locally, never push to registry
+## Verifying release images
 
-### Container Security
+Every image pushed by the release workflow is signed with [Sigstore cosign](https://docs.sigstore.dev/) keyless signing, tied to this repository's GitHub Actions workflow, and carries an SBOM and a build provenance attestation. To verify an image before running it, with cosign 3 or later:
 
-- Verified amd64 image builds
-- Regular base image updates
-- Minimal attack surface
-- Non-root user execution where possible
+```bash
+cosign verify ghcr.io/ingres-si/ingressi-web:latest \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/ingres-si/ingressi/\.github/workflows/docker-build-trusted\.yml@refs/(heads|tags)/'
+```
 
-### Dependency Management
+The same works for `ingressi-caddy` and `ingressi-l4-port-manager`.
 
-- Automated dependency updates via Dependabot
-- Security alerts enabled
-- Regular security audits
+## Software bill of materials
 
-## Security Best Practices for Contributors
+- Each GitHub release from v2.0.1 has a CycloneDX SBOM of the source tree attached.
+- Each image carries an SBOM attestation: `docker buildx imagetools inspect ghcr.io/ingres-si/ingressi-web:<tag> --format '{{ json .SBOM }}'`.
 
-When contributing:
+## Security measures
 
-1. Never commit secrets, tokens, or credentials
-2. Use environment variables for sensitive configuration
-3. Keep dependencies up to date
-4. Follow principle of least privilege
-5. Validate and sanitize all user inputs
-6. Use parameterized queries for database operations
+### Build pipeline
 
-## Automated Security Checks
+1. **Fork pull requests** need a maintainer's `safe-to-build` label before builds run.
+2. **No push from pull requests:** they only build images locally.
+3. **SBOM and provenance** are generated for every image build.
+4. **Signed images:** release images are signed with cosign keyless signing (see [Verifying release images](#verifying-release-images)).
+5. **Limited permissions:** workflows use the permissions they need and no more.
 
-Our repository includes:
+### Containers
 
-- **Dependabot** for dependency updates
-- **GitHub Security Advisories** monitoring
+- Images are built for `linux/amd64` and `linux/arm64`.
+- The web and Caddy containers run as non-root users.
+- The Docker socket is reached only through a socket proxy that filters API calls.
 
-## Safe-to-Build Label
+### Dependencies
 
-For maintainers reviewing fork PRs:
+- Dependabot opens dependency updates, and its security alerts and security updates are on.
+- Only patch and minor updates of the application's JavaScript (Bun) packages, in pull requests opened by Dependabot itself, merge automatically; major versions, GitHub Actions, Go modules (the Caddy build and its plugins) and container images wait for a maintainer's review.
+- Secret scanning with push protection is on.
+- CodeQL code scanning is on.
 
-1. Review the PR code thoroughly for malicious content
-2. Check for suspicious file modifications
-3. Verify no secrets or credentials are exposed
-4. Only add `safe-to-build` label if code is verified safe
-5. Remove label immediately if concerns arise
+## Security practices for contributors
 
-## Security Updates
+1. Never commit secrets, tokens or credentials.
+2. Use environment variables for sensitive configuration.
+3. Keep dependencies up to date.
+4. Follow the principle of least privilege.
+5. Validate and sanitise all user input.
+6. Use parameterised queries for database operations.
 
-Security updates are prioritized and released as soon as possible. Subscribe to repository releases to stay informed.
+## Safe-to-build label
+
+For maintainers reviewing fork pull requests:
+
+1. Review the code for malicious content.
+2. Check for suspicious file changes.
+3. Check that no secrets or credentials are exposed.
+4. Add `safe-to-build` only once the code is verified.
+5. Remove the label at once if a concern arises.

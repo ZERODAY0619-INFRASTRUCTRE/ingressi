@@ -9,6 +9,8 @@ vi.mock('@/src/lib/settings', () => ({
   saveCloudflareSettings: vi.fn(),
   getAuthentikSettings: vi.fn(),
   saveAuthentikSettings: vi.fn(),
+  getForwardAuthSettings: vi.fn(),
+  saveForwardAuthSettings: vi.fn(),
   getMetricsSettings: vi.fn(),
   saveMetricsSettings: vi.fn(),
   getLoggingSettings: vi.fn(),
@@ -25,10 +27,14 @@ vi.mock('@/src/lib/settings', () => ({
   saveWafSettings: vi.fn(),
   getErrorPagesSettings: vi.fn(),
   saveErrorPagesSettings: vi.fn(),
+  getResponseHeadersSettings: vi.fn(),
+  saveResponseHeadersSettings: vi.fn(),
   getTrustedProxiesSettings: vi.fn(),
   saveTrustedProxiesSettings: vi.fn(),
   getDefaultResponseSettings: vi.fn(),
   saveDefaultResponseSettings: vi.fn(),
+  getRateLimitSettings: vi.fn(),
+  saveRateLimitSettings: vi.fn(),
   getSetting: vi.fn(),
   setSetting: vi.fn(),
   clearSetting: vi.fn(),
@@ -43,6 +49,7 @@ vi.mock('@/src/lib/instance-sync', () => ({
 }));
 
 vi.mock('@/src/lib/auth', () => ({
+  requirePermission: vi.fn(() => import('@/tests/helpers/permission-mocks').then((m) => m.viaRequireAdmin())),
   requireAdmin: vi.fn().mockResolvedValue({ user: { id: '1' } }),
 }));
 
@@ -58,6 +65,11 @@ vi.mock('@/src/lib/models/proxy-hosts', () => ({
   sanitizeErrorPageRules: vi.fn((rules: unknown) => rules),
 }));
 vi.mock('@/src/lib/models/waf-events', () => ({ getWafRuleMessages: vi.fn() }));
+// The WAF group snapshots the global exclusion records to put them back if Caddy refuses the change.
+vi.mock('@/src/lib/models/waf-exclusion-mirror', () => ({
+  readGlobalWafExclusionRows: vi.fn(() => []),
+  restoreGlobalWafExclusionRows: vi.fn(),
+}));
 
 vi.mock('@/src/lib/caddy', () => ({
   applyCaddyConfig: vi.fn().mockResolvedValue({ ok: true }),
@@ -69,6 +81,7 @@ vi.mock('@/src/lib/api-auth', () => {
     constructor(msg: string, status: number) { super(msg); this.status = status; this.name = 'ApiAuthError'; }
   };
   return {
+    requireApiPermission: vi.fn((request: unknown) => import('@/tests/helpers/permission-mocks').then((m) => m.viaRequireApiAdmin(request))),
     requireApiAdmin: vi.fn().mockResolvedValue({ userId: 1, role: 'admin', authMethod: 'bearer' }),
     requireApiUser: vi.fn().mockResolvedValue({ userId: 1, role: 'admin', authMethod: 'bearer' }),
     apiErrorResponse: vi.fn((error: unknown) => {
@@ -89,6 +102,7 @@ import {
   getAcmeSettings, saveAcmeSettings,
   getCloudflareSettings, saveCloudflareSettings,
   getAuthentikSettings, saveAuthentikSettings,
+  getForwardAuthSettings, saveForwardAuthSettings,
   getMetricsSettings, saveMetricsSettings,
   getLoggingSettings, saveLoggingSettings,
   getDnsSettings, saveDnsSettings,
@@ -97,14 +111,18 @@ import {
   getWafSettings, saveWafSettings,
   getTrustedProxiesSettings, saveTrustedProxiesSettings,
   getDefaultResponseSettings, saveDefaultResponseSettings,
-  getDnsProviderSettings,
+  getDnsProviderSettings, saveDnsProviderSettings,
   getSetting, setSetting, clearSetting,
 } from '@/src/lib/settings';
+import { decryptSecret, isEncryptedSecret } from '@/src/lib/secret';
 import { getInstanceMode, setInstanceMode, getSlaveMasterToken, setSlaveMasterToken } from '@/src/lib/instance-sync';
 import { applyCaddyConfig } from '@/src/lib/caddy';
 import { requireApiAdmin } from '@/src/lib/api-auth';
 import { DefaultResponseValidationError } from '@/src/lib/caddy-default-response';
-import { updateGeneralSettingsAction } from '@/app/(dashboard)/settings/actions';
+import { updateGeneralSettingsAction, updateRateLimitSettingsAction, updateTrustedProxiesSettingsAction } from '@/app/(dashboard)/settings/actions';
+import { saveRateLimitSettings } from '@/src/lib/settings';
+import { logAuditEvent } from '@/src/lib/audit';
+import { CaddyApplyError } from '@/src/lib/caddy-apply-error';
 
 const mockGetGeneral = vi.mocked(getGeneralSettings);
 const mockSaveGeneral = vi.mocked(saveGeneralSettings);
@@ -114,6 +132,8 @@ const mockGetCloudflare = vi.mocked(getCloudflareSettings);
 const mockSaveCloudflare = vi.mocked(saveCloudflareSettings);
 const mockGetAuthentik = vi.mocked(getAuthentikSettings);
 const mockSaveAuthentik = vi.mocked(saveAuthentikSettings);
+const mockGetForwardAuth = vi.mocked(getForwardAuthSettings);
+const mockSaveForwardAuth = vi.mocked(saveForwardAuthSettings);
 const mockGetMetrics = vi.mocked(getMetricsSettings);
 const mockSaveMetrics = vi.mocked(saveMetricsSettings);
 const mockGetLogging = vi.mocked(getLoggingSettings);
@@ -655,6 +675,52 @@ describe('PUT authentik settings', () => {
   });
 });
 
+describe('GET forward-auth settings', () => {
+  it('returns forward auth settings', async () => {
+    const settings = { provider: 'authelia', authUpstream: 'http://authelia:9091', authEndpoint: '/api/authz/forward-auth' };
+    mockGetForwardAuth.mockResolvedValue(settings as any);
+
+    const response = await GET(createMockRequest(), { params: Promise.resolve({ group: 'forward-auth' }) });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual(settings);
+    expect(mockGetForwardAuth).toHaveBeenCalled();
+  });
+});
+
+describe('PUT forward-auth settings', () => {
+  it('saves forward auth settings without applying caddy config', async () => {
+    mockSaveForwardAuth.mockResolvedValue(undefined);
+    mockApplyCaddyConfig.mockClear();
+
+    const body = { provider: 'authelia', authUpstream: 'http://authelia:9091' };
+    const response = await PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ group: 'forward-auth' }) });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ ok: true });
+    expect(mockSaveForwardAuth).toHaveBeenCalledWith(body);
+    expect(mockApplyCaddyConfig).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown fields for forward auth settings', async () => {
+    const body = { provider: 'authelia', authUpstream: 'http://authelia:9091', evil: true };
+    const response = await PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ group: 'forward-auth' }) });
+
+    expect(response.status).toBe(400);
+    expect(mockSaveForwardAuth).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-http upstream URL', async () => {
+    const body = { provider: 'authelia', authUpstream: 'not-a-url' };
+    const response = await PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ group: 'forward-auth' }) });
+
+    expect(response.status).toBe(400);
+    expect(mockSaveForwardAuth).not.toHaveBeenCalled();
+  });
+});
+
 describe('GET metrics settings', () => {
   it('returns metrics settings', async () => {
     const settings = { enabled: true, port: 9090 };
@@ -850,6 +916,21 @@ describe('GET waf settings', () => {
   });
 });
 
+describe('PUT dns-provider settings', () => {
+  it('stores provider credentials encrypted', async () => {
+    const mockSaveDnsProvider = vi.mocked(saveDnsProviderSettings);
+    mockSaveDnsProvider.mockResolvedValue(undefined);
+
+    const body = { providers: { cloudflare: { api_token: 'plain-cloudflare-token' } }, default: 'cloudflare' };
+    const response = await PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ group: 'dns-provider' }) });
+
+    expect(response.status).toBe(200);
+    const token = mockSaveDnsProvider.mock.calls.at(-1)?.[0]?.providers.cloudflare?.api_token ?? '';
+    expect(isEncryptedSecret(token)).toBe(true);
+    expect(decryptSecret(token)).toBe('plain-cloudflare-token');
+  });
+});
+
 describe('PUT waf settings', () => {
   it('saves waf settings and applies caddy config', async () => {
     mockSaveWaf.mockResolvedValue(undefined);
@@ -860,8 +941,30 @@ describe('PUT waf settings', () => {
 
     expect(response.status).toBe(200);
     expect(data).toEqual({ ok: true });
-    expect(mockSaveWaf).toHaveBeenCalledWith(body);
+    // The caller is the author of exclusion records the excluded_rule_ids list adds.
+    expect(mockSaveWaf).toHaveBeenCalledWith(body, { actorUserId: 1 });
     expect(mockApplyCaddyConfig).toHaveBeenCalled();
+  });
+
+  it('keeps accepting a stored directive the filter now drops, but rejects a newly added one', async () => {
+    const legacy = 'SecRule ARGS "@pmFromFile /etc/hosts" "id:1,deny"';
+    mockGetWaf.mockResolvedValue({ enabled: true, mode: 'On', load_owasp_crs: true, custom_directives: legacy, excluded_rule_ids: [] } as any);
+    mockSaveWaf.mockResolvedValue(undefined);
+
+    const unchanged = { enabled: true, mode: 'DetectionOnly', load_owasp_crs: true, custom_directives: legacy, excluded_rule_ids: [] };
+    const ok = await PUT(createMockRequest({ method: 'PUT', body: unchanged }), { params: Promise.resolve({ group: 'waf' }) });
+    expect(ok.status).toBe(200);
+    expect(mockSaveWaf).toHaveBeenCalledWith(unchanged, { actorUserId: 1 });
+
+    mockSaveWaf.mockClear();
+    const added = 'SecRule ARGS "@ipMatchFromFile /etc/blocklist" "id:2,deny"';
+    const body = { ...unchanged, custom_directives: `${legacy}\n${added}` };
+    const rejected = await PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ group: 'waf' }) });
+    const data = await rejected.json();
+    expect(rejected.status).toBe(400);
+    expect(data.error).toContain(added);
+    expect(data.error).not.toContain('/etc/hosts');
+    expect(mockSaveWaf).not.toHaveBeenCalled();
   });
 });
 
@@ -891,5 +994,174 @@ describe('PUT trusted-proxies settings', () => {
     expect(data).toEqual({ ok: true });
     expect(mockSaveTrustedProxies).toHaveBeenCalledWith(body);
     expect(mockApplyCaddyConfig).toHaveBeenCalled();
+  });
+});
+
+describe('PUT trusted-proxies settings: PROXY protocol sources', () => {
+  const put = (body: unknown) =>
+    PUT(createMockRequest({ method: 'PUT', body }), { params: Promise.resolve({ group: 'trusted-proxies' }) });
+
+  it('stores the sources normalized and applies Caddy', async () => {
+    mockSaveTrustedProxies.mockResolvedValue(undefined);
+    const response = await put({ ranges: [], proxy_protocol_ranges: ['192.168.1.1/24', ' 10.0.0.5 ', '10.0.0.5', '2001:db8::1'] });
+    expect(response.status).toBe(200);
+    expect(mockSaveTrustedProxies).toHaveBeenCalledWith({ ranges: [], proxy_protocol_ranges: ['192.168.1.0/24', '10.0.0.5', '2001:db8::1'] });
+    expect(mockApplyCaddyConfig).toHaveBeenCalled();
+  });
+
+  it('refuses a source that matches every address, without saving or applying', async () => {
+    for (const all of ['0.0.0.0/0', '::/0']) {
+      const response = await put({ ranges: [], proxy_protocol_ranges: ['192.168.1.1', all] });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toMatch(/proxy_protocol_ranges: .* matches every address/);
+    }
+    expect(mockSaveTrustedProxies).not.toHaveBeenCalled();
+    expect(mockApplyCaddyConfig).not.toHaveBeenCalled();
+  });
+
+  it('refuses private_ranges, names and non-lists', async () => {
+    for (const value of [['private_ranges'], ['firewall.lan'], '192.168.1.1', [7]]) {
+      const response = await put({ ranges: [], proxy_protocol_ranges: value });
+      expect(response.status, JSON.stringify(value)).toBe(400);
+      expect((await response.json()).error).toContain('trusted-proxies.proxy_protocol_ranges');
+    }
+    expect(mockSaveTrustedProxies).not.toHaveBeenCalled();
+  });
+
+  it('rolls the sources back when Caddy rejects the configuration', async () => {
+    const previous = { ranges: ['10.0.0.0/8'] };
+    mockGetSetting.mockResolvedValueOnce(previous);
+    mockSaveTrustedProxies.mockResolvedValue(undefined);
+    mockApplyCaddyConfig.mockRejectedValueOnce(new Error('Caddy rejected configuration'));
+    const response = await put({ ranges: [], proxy_protocol_ranges: ['192.168.1.1'] });
+    expect(response.status).toBe(502);
+    expect(mockSetSetting).toHaveBeenCalledWith('trusted_proxies', previous);
+  });
+
+  it('returns the stored sources', async () => {
+    const settings = { ranges: [], proxy_protocol_ranges: ['192.168.1.1', '10.0.10.0/24'] };
+    mockGetTrustedProxies.mockResolvedValue(settings as any);
+    const response = await GET(createMockRequest(), { params: Promise.resolve({ group: 'trusted-proxies' }) });
+    expect(await response.json()).toEqual(settings);
+  });
+});
+
+describe('updateTrustedProxiesSettingsAction (dashboard form)', () => {
+  const form = (fields: Record<string, string>) => {
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(fields)) formData.set(key, value);
+    return formData;
+  };
+
+  it('saves the PROXY protocol sources from the text area, normalized', async () => {
+    const result = await updateTrustedProxiesSettingsAction(null, form({
+      ranges: '', clientIpHeaders: '', proxyProtocolRanges: '192.168.1.1\n10.0.10.7/24, 192.168.1.1\n\n2001:db8::1',
+    }));
+    expect(result).toMatchObject({ success: true });
+    expect(mockSaveTrustedProxies).toHaveBeenCalledWith({
+      ranges: [],
+      client_ip_headers: undefined,
+      strict: undefined,
+      default_geoblock: undefined,
+      proxy_protocol_ranges: ['192.168.1.1', '10.0.10.0/24', '2001:db8::1'],
+    });
+    expect(mockApplyCaddyConfig).toHaveBeenCalled();
+  });
+
+  it('keeps the other fields as they were saved before', async () => {
+    await updateTrustedProxiesSettingsAction(null, form({
+      ranges: 'private_ranges', clientIpHeaders: 'Cf-Connecting-Ip', strict: 'on', defaultGeoblock: 'on', proxyProtocolRanges: '172.21.0.1',
+    }));
+    expect(mockSaveTrustedProxies).toHaveBeenCalledWith({
+      ranges: ['private_ranges'],
+      client_ip_headers: ['Cf-Connecting-Ip'],
+      strict: true,
+      default_geoblock: true,
+      proxy_protocol_ranges: ['172.21.0.1'],
+    });
+  });
+
+  it('leaves the sources out when the text area is empty or missing', async () => {
+    await updateTrustedProxiesSettingsAction(null, form({ ranges: '10.0.0.0/8', proxyProtocolRanges: '  \n ' }));
+    expect(mockSaveTrustedProxies).toHaveBeenLastCalledWith(expect.objectContaining({ proxy_protocol_ranges: undefined }));
+    await updateTrustedProxiesSettingsAction(null, form({ ranges: '10.0.0.0/8' }));
+    expect(mockSaveTrustedProxies).toHaveBeenLastCalledWith(expect.objectContaining({ proxy_protocol_ranges: undefined }));
+  });
+
+  it('reports a bad source by name and saves nothing', async () => {
+    for (const [text, message] of [
+      ['192.168.1.1\n0.0.0.0/0', /PROXY protocol sources: "0\.0\.0\.0\/0" matches every address/],
+      ['private_ranges', /PROXY protocol sources: "private_ranges" is not accepted here/],
+      ['firewall.lan', /PROXY protocol sources: "firewall\.lan" is not an IP address or a CIDR range/],
+    ] as const) {
+      const result = await updateTrustedProxiesSettingsAction(null, form({ ranges: '', proxyProtocolRanges: text }));
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(message);
+    }
+    expect(mockSaveTrustedProxies).not.toHaveBeenCalled();
+    expect(mockApplyCaddyConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateRateLimitSettingsAction (dashboard form)', () => {
+  const form = (value: unknown) => {
+    const formData = new FormData();
+    formData.set('rateLimitSettingsJson', typeof value === 'string' ? value : JSON.stringify(value));
+    return formData;
+  };
+  const settings = {
+    enabled: true,
+    rules: [{ path: '/login', methods: ['post'], key: 'client_ip', events: 5, window: '1m' }],
+    allowlist: ['192.0.2.1'],
+    ipv6Prefix: 64,
+  };
+
+  it('saves the normalized settings, applies Caddy and records an audit event', async () => {
+    const result = await updateRateLimitSettingsAction(null, form(settings));
+    expect(result).toMatchObject({ success: true });
+    const saved = {
+      enabled: true,
+      rules: [{ path: '/login', methods: ['POST'], key: 'client_ip', events: 5, window: '1m' }],
+      allowlist: ['192.0.2.1'],
+      ipv6Prefix: 64,
+    };
+    expect(vi.mocked(saveRateLimitSettings)).toHaveBeenCalledWith(saved);
+    expect(mockApplyCaddyConfig).toHaveBeenCalled();
+    expect(vi.mocked(logAuditEvent)).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 1, entityType: 'setting', summary: 'Updated rate limiting defaults', data: saved,
+    }));
+  });
+
+  it('reports invalid input without saving', async () => {
+    expect(await updateRateLimitSettingsAction(null, form('{not json'))).toEqual({ success: false, message: 'Invalid rate limiting payload' });
+    const result = await updateRateLimitSettingsAction(null, form({ ...settings, rules: [{ events: 5, window: '1d' }] }));
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/Rate limiting\.rules\[0\]\.window/);
+    expect(vi.mocked(saveRateLimitSettings)).not.toHaveBeenCalled();
+    expect(mockApplyCaddyConfig).not.toHaveBeenCalled();
+  });
+
+  it('restores the previous value when Caddy rejects the configuration', async () => {
+    const previous = { enabled: false, rules: [], allowlist: [] };
+    mockGetSetting.mockResolvedValueOnce(previous);
+    mockApplyCaddyConfig.mockRejectedValueOnce(new CaddyApplyError('Caddy rejected configuration', 'CADDY_REJECTED'));
+    const result = await updateRateLimitSettingsAction(null, form(settings));
+    expect(result.success).toBe(false);
+    expect(mockSetSetting).toHaveBeenCalledWith('rate_limit', previous);
+    expect(mockApplyCaddyConfig).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(logAuditEvent)).not.toHaveBeenCalled();
+  });
+
+  it('clears the setting on rejection when there was none, and keeps it when only syncing failed', async () => {
+    mockApplyCaddyConfig.mockRejectedValueOnce(new CaddyApplyError('Caddy rejected configuration', 'CADDY_REJECTED'));
+    await updateRateLimitSettingsAction(null, form(settings));
+    expect(mockClearSetting).toHaveBeenCalledWith('rate_limit');
+
+    vi.clearAllMocks();
+    mockApplyCaddyConfig.mockRejectedValueOnce(new CaddyApplyError('sync failed', 'INSTANCE_SYNC_FAILED'));
+    const result = await updateRateLimitSettingsAction(null, form(settings));
+    expect(result).toMatchObject({ success: true });
+    expect(mockClearSetting).not.toHaveBeenCalled();
+    expect(mockSetSetting).not.toHaveBeenCalled();
   });
 });

@@ -28,12 +28,13 @@ export function createSelfSignedServerCertificate(
   cert.publicKey = keypair.publicKey;
   cert.serialNumber = randomSerialNumber();
   cert.validity.notBefore = new Date();
-  cert.validity.notAfter = new Date();
-  cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + validityDays);
+  // Exactly validityDays from now: calendar arithmetic (setDate) is a day plus
+  // or minus an hour when the window crosses a daylight saving change.
+  cert.validity.notAfter = new Date(cert.validity.notBefore.getTime() + validityDays * 24 * 60 * 60 * 1000);
 
   const subject = [
     { name: 'commonName', value: commonName },
-    { name: 'organizationName', value: 'Caddy Proxy Manager E2E' },
+    { name: 'organizationName', value: 'Ingressi E2E' },
   ];
 
   cert.setSubject(subject);

@@ -1,311 +1,296 @@
 import { test, expect, type Page } from '@playwright/test';
+import { escapeRegExp } from '../helpers/text';
+
+/**
+ * The settings pages: Settings itself (the general settings), and the
+ * pages next to what they configure (Certificate settings, Host defaults,
+ * Geo blocking, Rate limiting, Analytics settings, OAuth providers, Instance
+ * sync, High availability, Backups). Old /settings links lead to them.
+ */
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** The settings page has its own sidebar (`aria-label="Settings navigation"`),
- *  separate from the global dashboard sidebar. Use this selector everywhere. */
-const SETTINGS_SIDEBAR = 'aside[aria-label="Settings navigation"]';
+/** Every settings page, its heading, and the sidebar entry it is listed under. */
+const SETTINGS_PAGES = [
+  { path: '/settings', title: 'Settings', entry: 'Settings' },
+  { path: '/certificates/settings', title: 'Certificate settings', entry: 'Certificates' },
+  { path: '/proxy-hosts/defaults', title: 'Host defaults', entry: 'Proxy hosts' },
+  { path: '/geo-blocking', title: 'Geo blocking', entry: 'Security events' },
+  { path: '/rate-limiting', title: 'Rate limiting', entry: 'Security events' },
+  { path: '/analytics/settings', title: 'Analytics settings', entry: 'Analytics' },
+  { path: '/oauth-providers', title: 'OAuth providers', entry: 'Sign-in and directories' },
+  { path: '/instances', title: 'Instance sync', entry: 'Fleet' },
+  { path: '/high-availability', title: 'High availability', entry: 'High availability' },
+  { path: '/backups', title: 'Backups', entry: 'Change history' },
+] as const;
 
-/** Navigate to a specific settings section via the sidebar. */
-async function goToSection(page: Page, sectionName: string) {
-  await page.goto('/settings');
-  const sidebar = page.locator(SETTINGS_SIDEBAR);
-  const navButton = sidebar.getByRole('button', { name: sectionName, exact: true });
-  await expect(navButton).toBeVisible({ timeout: 10_000 });
-  await navButton.click();
+/** Open a page and wait until it is interactive: fields typed into before hydration do not count as changes. */
+async function open(page: Page, path: string) {
+  await page.goto(path);
+  await page.waitForLoadState('networkidle');
 }
 
-// ─── Page load & layout ──────────────────────────────────────────────────────
+function main(page: Page) {
+  return page.getByRole('main');
+}
 
-test.describe('Settings — page load & layout', () => {
-  test('settings page loads without redirecting to login', async ({ page }) => {
-    await page.goto('/settings');
-    await expect(page).not.toHaveURL(/login/);
-    await expect(page.locator('body')).toBeVisible();
-  });
+function saveBar(page: Page) {
+  return main(page).getByTestId('settings-save-bar');
+}
 
-  test('settings page defaults to Instance Sync section', async ({ page }) => {
-    await page.goto('/settings');
-    // The detail header should show Instance Sync
-    await expect(page.getByRole('heading', { name: 'Instance Sync' })).toBeVisible();
-  });
+/** The dashboard's command palette (src/components/command-palette). */
+function commandPalette(page: Page) {
+  const dialog = page.getByRole('dialog', { name: 'Command palette' });
+  return { dialog, input: dialog.getByRole('combobox', { name: 'Search hosts, actions, settings and documentation' }) };
+}
 
-  test('sidebar is visible and shows all group headers', async ({ page }) => {
-    await page.goto('/settings');
-    const sidebar = page.locator(SETTINGS_SIDEBAR);
-    await expect(sidebar).toBeVisible();
-    await expect(sidebar.getByText('System')).toBeVisible();
-    await expect(sidebar.getByText('Networking')).toBeVisible();
-    await expect(sidebar.getByText('Security')).toBeVisible();
-    await expect(sidebar.getByText('Observability')).toBeVisible();
-  });
+// ─── Pages and navigation ────────────────────────────────────────────────────
 
-  test('sidebar shows settings navigation items', async ({ page }) => {
-    await page.goto('/settings');
-    const sidebar = page.locator(SETTINGS_SIDEBAR);
-    const expectedItems = [
-      'Instance Sync', 'General', 'ACME Server', 'Default Response',
-      'DNS Providers', 'DNS Resolvers', 'Upstream DNS Pinning',
-      'Global Geoblocking', 'Authentik Defaults', 'OAuth Providers',
-      'Metrics & Monitoring', 'Access Logging',
-    ];
-    for (const name of expectedItems) {
-      await expect(sidebar.getByRole('button', { name, exact: true })).toBeVisible();
+test.describe('Settings pages — load and navigation', () => {
+  for (const { path, title } of SETTINGS_PAGES) {
+    test(`${path} loads with its heading`, async ({ page }) => {
+      const response = await page.goto(path);
+      expect(response?.status() ?? 0).toBeLessThan(400);
+      await expect(page).not.toHaveURL(/login/);
+      await expect(page.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible();
+    });
+  }
+
+  test('each page is a sub-item of its sidebar entry, marked current', async ({ page }) => {
+    for (const { path, title, entry } of SETTINGS_PAGES) {
+      if (path === '/high-availability' || path === '/settings') continue; // Entries of their own, with no sub-items.
+      await page.goto(path);
+      const subItems = page.getByRole('list', { name: entry, exact: true });
+      await expect(subItems, path).toBeVisible();
+      await expect(subItems.getByRole('link', { name: title, exact: true }), path).toHaveAttribute('aria-current', 'page');
     }
   });
 
-  test('sidebar search button is visible with keyboard hint', async ({ page }) => {
+  test('Settings is one page, without the old group list', async ({ page }) => {
     await page.goto('/settings');
-    const sidebar = page.locator(SETTINGS_SIDEBAR);
-    await expect(sidebar.getByText('Jump to setting...')).toBeVisible();
-    await expect(sidebar.locator('kbd')).toBeVisible();
+    await expect(main(page).getByRole('heading', { level: 2, name: 'General' })).toBeVisible();
+    await expect(page.locator('aside[aria-label="Settings navigation"]')).toHaveCount(0);
+    await expect(page.getByRole('searchbox', { name: 'Search settings' })).toHaveCount(0);
   });
 });
 
-// ─── Sidebar navigation ─────────────────────────────────────────────────────
+// ─── Old links ───────────────────────────────────────────────────────────────
 
-test.describe('Settings — sidebar navigation', () => {
-  test('clicking a nav item switches the detail pane', async ({ page }) => {
-    await page.goto('/settings');
-    // Default: Instance Sync
-    await expect(page.getByRole('heading', { name: 'Instance Sync' })).toBeVisible();
+test.describe('Settings — old links', () => {
+  test('?section= links open the page that holds the section', async ({ page }) => {
+    await page.goto('/settings?section=dns-providers');
+    await expect(page).toHaveURL(/\/certificates\/settings#dns-providers$/);
+    await expect(page.getByRole('heading', { name: 'DNS-01 providers' })).toBeVisible();
 
-    // Navigate to General
-    await page.locator(SETTINGS_SIDEBAR).getByRole('button', { name: 'General', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-    // Instance Sync heading should no longer be visible
-    await expect(page.getByRole('heading', { name: 'Instance Sync' })).not.toBeVisible();
-  });
+    await page.goto('/settings?section=logging');
+    await expect(page).toHaveURL(/\/analytics\/settings#logging$/);
+    await expect(page.getByRole('heading', { level: 2, name: 'Access log' })).toBeVisible();
 
-  test('breadcrumb shows correct group for each section', async ({ page }) => {
-    await page.goto('/settings');
-    const breadcrumb = page.getByTestId('settings-breadcrumb');
+    await page.goto('/settings?section=default-response');
+    await expect(page).toHaveURL(/\/proxy-hosts\/defaults#default-response$/);
+    await expect(page.getByRole('heading', { name: 'Requests for unknown hosts' })).toBeVisible();
 
-    // Instance Sync is under System
-    await expect(breadcrumb.getByText('System')).toBeVisible();
+    await page.goto('/settings?section=authentik');
+    await expect(page).toHaveURL(/\/proxy-hosts\/defaults#authentik$/);
 
-    // Navigate to DNS Providers under Networking
-    await page.locator(SETTINGS_SIDEBAR).getByRole('button', { name: 'DNS Providers', exact: true }).click();
-    await expect(breadcrumb.getByText('Networking')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'DNS Providers' })).toBeVisible();
-  });
-
-  test('navigating through all sections renders correct headings', async ({ page }) => {
-    await page.goto('/settings');
-    const sidebar = page.locator(SETTINGS_SIDEBAR);
-
-    const sections = [
-      'Instance Sync', 'General', 'Default Response',
-      'DNS Providers', 'DNS Resolvers', 'Upstream DNS Pinning',
-      'Global Geoblocking', 'Authentik Defaults', 'OAuth Providers',
-      'Metrics & Monitoring', 'Access Logging',
-    ];
-
-    for (const name of sections) {
-      await sidebar.getByRole('button', { name, exact: true }).click();
-      await expect(page.getByRole('heading', { name })).toBeVisible();
+    for (const [id, path] of [['sync', '/instances'], ['geoblock', '/geo-blocking'], ['rate-limit', '/rate-limiting'], ['oauth', '/oauth-providers'], ['backups', '/backups'], ['high-availability', '/high-availability']]) {
+      await page.goto(`/settings?section=${id}`);
+      await expect(page, id).toHaveURL(new RegExp(`${escapeRegExp(path)}$`));
     }
   });
 
-  test('only one section is visible at a time', async ({ page }) => {
-    await page.goto('/settings');
+  test('#section and ?group= links open the page that holds the section', async ({ page }) => {
+    await page.goto('/settings#geoblock');
+    await expect(page).toHaveURL(/\/geo-blocking$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Geo blocking' })).toBeVisible();
 
-    // On the Instance Sync section, General's save button should not be present
-    await expect(page.getByRole('button', { name: /save general settings/i })).not.toBeVisible();
-    await expect(page.getByRole('button', { name: /save instance mode/i })).toBeVisible();
+    await page.goto('/settings#metrics');
+    await expect(page).toHaveURL(/\/analytics\/settings#metrics$/);
 
-    // Switch to General
-    await page.locator(SETTINGS_SIDEBAR).getByRole('button', { name: 'General', exact: true }).click();
-    await expect(page.getByRole('button', { name: /save general settings/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /save instance mode/i })).not.toBeVisible();
+    await page.goto('/settings?group=networking');
+    await expect(page).toHaveURL(/\/proxy-hosts\/defaults#trusted-proxies$/);
   });
 });
 
-// ─── Cmd-K palette ───────────────────────────────────────────────────────────
+// ─── Save bar ────────────────────────────────────────────────────────────────
 
-test.describe('Settings — Cmd-K palette', () => {
+test.describe('Settings — save bar', () => {
+  test('counts unsaved changes and discards them', async ({ page }) => {
+    await open(page, '/settings');
+    const domain = main(page).locator('input[name="primaryDomain"]');
+    const original = await domain.inputValue();
+    await domain.fill('unsaved-change.example.com');
+    await expect(saveBar(page)).toContainText('1 unsaved change in General');
+
+    await saveBar(page).getByRole('button', { name: 'Discard' }).click();
+    await expect(main(page).locator('input[name="primaryDomain"]')).toHaveValue(original);
+    await expect(saveBar(page)).toContainText('No unsaved changes');
+    await expect(saveBar(page).getByRole('button', { name: 'Save changes' })).toBeDisabled();
+  });
+
+  test('one save bar saves every changed card of Host defaults', async ({ page }) => {
+    await open(page, '/proxy-hosts/defaults');
+    await expect(saveBar(page)).toHaveCount(1);
+    await main(page).getByRole('radio', { name: /^Custom response/ }).check();
+    await main(page).getByRole('switch', { name: 'Resolve upstream hostnames when applying' }).click();
+    await expect(saveBar(page)).toContainText(/unsaved changes in Host defaults/);
+    await saveBar(page).getByRole('button', { name: 'Discard' }).click();
+    await expect(saveBar(page)).toContainText('No unsaved changes');
+  });
+});
+
+// ─── Command palette ─────────────────────────────────────────────────────────
+
+test.describe('Settings — command palette', () => {
   test('Cmd+K opens the command palette', async ({ page }) => {
-    await page.goto('/settings');
-    await page.keyboard.press('Meta+k');
-    const dialog = page.getByRole('dialog');
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByPlaceholder(/jump to a setting/i)).toBeVisible();
+    await expect(input).toBeFocused();
   });
 
-  test('clicking the search button opens the command palette', async ({ page }) => {
-    await page.goto('/settings');
-    await page.locator(SETTINGS_SIDEBAR).getByText('Jump to setting...').click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-  });
-
-  test('palette shows all settings items', async ({ page }) => {
-    await page.goto('/settings');
-    await page.keyboard.press('Meta+k');
-    const dialog = page.getByRole('dialog');
-    await expect(dialog.getByText('Instance Sync')).toBeVisible();
-    await expect(dialog.getByText('General')).toBeVisible();
-    await expect(dialog.getByText('Default Response')).toBeVisible();
-    await expect(dialog.getByText('DNS Providers')).toBeVisible();
-    await expect(dialog.getByText('Metrics & Monitoring')).toBeVisible();
+  test('palette finds the sections of the settings pages', async ({ page }) => {
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('dns');
+    await expect(dialog.getByRole('option', { name: /^DNS-01 providers/ })).toBeVisible();
+    await expect(dialog.getByRole('option', { name: /^DNS-01 resolvers/ })).toBeVisible();
   });
 
   test('typing in the palette filters results', async ({ page }) => {
-    await page.goto('/settings');
-    await page.keyboard.press('Meta+k');
-    const dialog = page.getByRole('dialog');
-    const input = dialog.getByPlaceholder(/jump to a setting/i);
-    // Use "geob" — specific enough that cmdk fuzzy matching won't hit unrelated items
-    // ("dns" fuzzy-matches "Instance Sync" via d-n-s in "Standalone, coordination, System")
-    await input.fill('geob');
-    await expect(dialog.getByText('Global Geoblocking')).toBeVisible();
-    // Non-matching items should be hidden
-    await expect(dialog.getByText('Instance Sync')).not.toBeVisible();
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('geo bl');
+    await expect(dialog.getByRole('option', { name: /^Geo blocking/ }).first()).toBeVisible();
+    await expect(dialog.getByRole('option', { name: /Instance sync/ })).toHaveCount(0);
   });
 
-  test('selecting a palette result navigates to that section', async ({ page }) => {
-    await page.goto('/settings');
-    await page.keyboard.press('Meta+k');
-    const dialog = page.getByRole('dialog');
-    const input = dialog.getByPlaceholder(/jump to a setting/i);
-    await input.fill('logging');
-    await dialog.getByText('Access Logging').click();
-    // Palette should close
+  test('selecting a palette result opens its page at the section', async ({ page }) => {
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('access log');
+    await dialog.getByRole('option', { name: /Access log/ }).first().click();
     await expect(dialog).not.toBeVisible();
-    // Detail pane should show logging section
-    await expect(page.getByRole('heading', { name: 'Access Logging' })).toBeVisible();
+    await expect(page).toHaveURL(/\/analytics\/settings#logging$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Analytics settings' })).toBeVisible();
   });
 
-  test('Escape closes the palette', async ({ page }) => {
-    await page.goto('/settings');
-    await page.keyboard.press('Meta+k');
-    await expect(page.getByRole('dialog')).toBeVisible();
+  test('Enter opens the selected result', async ({ page }) => {
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('trusted prox');
+    await expect(dialog.getByRole('option', { name: /Trusted proxies/ }).first()).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Enter');
+    await expect(dialog).not.toBeVisible();
+    await expect(page).toHaveURL(/\/proxy-hosts\/defaults#trusted-proxies$/);
+  });
+
+  test('Escape clears the query first, then closes the palette', async ({ page }) => {
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('geob');
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await expect(input).toHaveValue('');
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
   });
 
-  test('palette shows "no match" for gibberish query', async ({ page }) => {
-    await page.goto('/settings');
-    await page.keyboard.press('Meta+k');
-    const dialog = page.getByRole('dialog');
-    await dialog.getByPlaceholder(/jump to a setting/i).fill('zzzzxyzzy');
-    await expect(dialog.getByText(/no settings match/i)).toBeVisible();
-  });
-});
-
-// ─── Instance Sync section ───────────────────────────────────────────────────
-
-test.describe('Settings — Instance Sync', () => {
-  test('shows mode selector with Standalone/Master/Slave options', async ({ page }) => {
-    await page.goto('/settings');
-    await expect(page.getByRole('heading', { name: 'Instance Sync' })).toBeVisible();
-    // The mode select trigger should be present
-    await expect(page.getByRole('combobox')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save instance mode/i })).toBeVisible();
-  });
-
-  test('mode selector displays the three options', async ({ page }) => {
-    await page.goto('/settings');
-    await page.getByRole('combobox').click();
-    await expect(page.getByRole('option', { name: 'Standalone' })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'Master' })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'Slave' })).toBeVisible();
+  test('palette shows "nothing matches" for gibberish query', async ({ page }) => {
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('zzzzxyzzy');
+    await expect(dialog.getByText(/Nothing matches “zzzzxyzzy”/)).toBeVisible();
+    await dialog.getByRole('button', { name: 'Clear the search' }).first().click();
+    await expect(input).toHaveValue('');
   });
 });
 
-// ─── General section ─────────────────────────────────────────────────────────
+// ─── Instance sync ───────────────────────────────────────────────────────────
+
+test.describe('Instance sync', () => {
+  test('shows the mode as Standalone, Master or Replica', async ({ page }) => {
+    await open(page, '/instances');
+    const mode = main(page).getByRole('group', { name: 'Instance mode' });
+    await expect(mode.getByRole('button', { name: 'Standalone' })).toBeVisible();
+    await expect(mode.getByRole('button', { name: 'Master' })).toBeVisible();
+    await expect(mode.getByRole('button', { name: 'Replica' })).toBeVisible();
+    await expect(saveBar(page).getByRole('button', { name: 'Save changes' })).toBeVisible();
+  });
+});
+
+// ─── General ─────────────────────────────────────────────────────────────────
 
 test.describe('Settings — General', () => {
-  // FormRow uses <div> labels (not <Label htmlFor>), so we target inputs by name attribute
-  test('shows primary domain and ACME email fields', async ({ page }) => {
-    await goToSection(page, 'General');
-    await expect(page.locator('input[name="primaryDomain"]')).toBeVisible();
-    await expect(page.locator('input[name="acmeEmail"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save general settings/i })).toBeVisible();
-  });
-
-  test('fill primary domain and save', async ({ page }) => {
-    await goToSection(page, 'General');
-    const domainInput = page.locator('input[name="primaryDomain"]');
-    await domainInput.fill('test.local');
-    await page.getByRole('button', { name: /save general settings/i }).click();
-    await expect(page.getByRole('button', { name: /save general settings/i })).toBeEnabled({ timeout: 10_000 });
+  test('shows the primary domain and the dashboard address', async ({ page }) => {
+    await open(page, '/settings');
+    await expect(main(page).getByLabel('Primary domain')).toBeVisible();
+    await expect(main(page).getByText('Set by BASE_URL in the environment.')).toBeVisible();
   });
 
   test('primary domain persists after save and page reload', async ({ page }) => {
-    await goToSection(page, 'General');
-    const domainInput = page.locator('input[name="primaryDomain"]');
-    await domainInput.fill('persist-test.local');
-    await page.getByRole('button', { name: /save general settings/i }).click();
-    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 10_000 });
+    await open(page, '/settings');
+    await main(page).getByLabel('Primary domain').fill('persist-test.local');
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
+    await expect(saveBar(page).getByText('General settings saved successfully')).toBeVisible({ timeout: 10_000 });
 
-    // Reload and navigate back
-    await goToSection(page, 'General');
-    await expect(page.locator('input[name="primaryDomain"]')).toHaveValue('persist-test.local');
+    await open(page, '/settings');
+    await expect(main(page).getByLabel('Primary domain')).toHaveValue('persist-test.local');
 
-    // Reset
-    await page.locator('input[name="primaryDomain"]').fill('caddyproxymanager.com');
-    await page.getByRole('button', { name: /save general settings/i }).click();
-    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 10_000 });
-  });
-
-  test('ACME email field accepts email input', async ({ page }) => {
-    await goToSection(page, 'General');
-    const emailInput = page.locator('input[name="acmeEmail"]');
-    await emailInput.fill('test@example.com');
-    await expect(emailInput).toHaveValue('test@example.com');
+    await main(page).getByLabel('Primary domain').fill('example.com');
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
+    await expect(saveBar(page).getByText('General settings saved successfully')).toBeVisible({ timeout: 10_000 });
   });
 });
 
-// ─── Default Response section (unknown hosts — issue #241) ──────────────────
+// ─── Requests for unknown hosts (issue #241) ────────────────────────────────
 
-test.describe('Settings — Default Response', () => {
-  test('shows all supported behaviors and conditional custom fields', async ({ page }) => {
-    await goToSection(page, 'Default Response');
-    const behavior = page.getByRole('combobox', { name: 'Default response behavior' });
-    await expect(behavior).toBeVisible();
-    await behavior.click();
-    await expect(page.getByRole('option', { name: 'Caddy native behavior' })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'Custom HTTP response' })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'Redirect' })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'No response (abort connection)' })).toBeVisible();
-    await page.getByRole('option', { name: 'Custom HTTP response' }).click();
-
-    await expect(page.locator('input[name="status"]')).toHaveValue('404');
-    await expect(page.locator('textarea[name="body"]')).toBeVisible();
-    await expect(page.locator('textarea[name="headers"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save default response/i })).toBeVisible();
+test.describe('Host defaults — Requests for unknown hosts', () => {
+  test('shows all supported answers and the custom response fields', async ({ page }) => {
+    await open(page, '/proxy-hosts/defaults');
+    const card = main(page).locator('#default-response');
+    for (const name of ['Caddy default', 'Custom response', 'Redirect', 'Close the connection']) {
+      await expect(card.getByRole('radio', { name: new RegExp(`^${name}`) })).toBeVisible();
+    }
+    await card.getByRole('radio', { name: /^Custom response/ }).check();
+    await expect(card.locator('input[name="status"]')).toHaveValue('404');
+    await expect(card.locator('textarea[name="body"]')).toBeVisible();
+    await expect(card.locator('textarea[name="headers"]')).toBeVisible();
   });
 
-  test('saves and reloads a custom response through the settings form', async ({ page }) => {
-    await goToSection(page, 'Default Response');
-    let behavior = page.getByRole('combobox', { name: 'Default response behavior' });
-    await behavior.click();
-    await page.getByRole('option', { name: 'Custom HTTP response' }).click();
-    await page.locator('input[name="status"]').fill('451');
-    await page.locator('textarea[name="body"]').fill('Unavailable for legal reasons');
-    await page.locator('textarea[name="headers"]').fill('Content-Type: text/plain; charset=utf-8\nX-Cpm-Ui: saved');
-    await page.getByRole('button', { name: /save default response/i }).click();
+  test('saves and reloads a custom response', async ({ page }) => {
+    await open(page, '/proxy-hosts/defaults');
+    let card = main(page).locator('#default-response');
+    await card.getByRole('radio', { name: /^Custom response/ }).check();
+    await card.locator('input[name="status"]').fill('451');
+    await card.locator('textarea[name="body"]').fill('Unavailable for legal reasons');
+    await card.locator('textarea[name="headers"]').fill('Content-Type: text/plain; charset=utf-8\nX-Test-Ui: saved');
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByText('Default response saved and applied successfully')).toBeVisible({ timeout: 10_000 });
 
-    await goToSection(page, 'Default Response');
-    behavior = page.getByRole('combobox', { name: 'Default response behavior' });
-    await expect(behavior).toContainText('Custom HTTP response');
-    await expect(page.locator('input[name="status"]')).toHaveValue('451');
-    await expect(page.locator('textarea[name="body"]')).toHaveValue('Unavailable for legal reasons');
-    await expect(page.locator('textarea[name="headers"]')).toHaveValue(
-      'Content-Type: text/plain; charset=utf-8\nX-Cpm-Ui: saved'
-    );
+    await open(page, '/proxy-hosts/defaults');
+    card = main(page).locator('#default-response');
+    await expect(card.getByRole('radio', { name: /^Custom response/ })).toBeChecked();
+    await expect(card.locator('input[name="status"]')).toHaveValue('451');
+    await expect(card.locator('textarea[name="body"]')).toHaveValue('Unavailable for legal reasons');
+    await expect(card.locator('textarea[name="headers"]')).toHaveValue('Content-Type: text/plain; charset=utf-8\nX-Test-Ui: saved');
 
-    await behavior.click();
-    await page.getByRole('option', { name: 'Caddy native behavior' }).click();
-    await page.getByRole('button', { name: /save default response/i }).click();
+    await card.getByRole('radio', { name: /^Caddy default/ }).check();
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByText('Default response saved and applied successfully')).toBeVisible({ timeout: 10_000 });
   });
 });
 
-// ─── ACME Server section (custom ACME directory URL — issue #192) ─────────────
+// ─── Certificate authority (custom ACME directory URL — issue #192) ─────────
 
-test.describe('Settings — ACME Server', () => {
+test.describe('Certificate settings — Certificate authority', () => {
   const API_SETTINGS_ACME = 'http://localhost:3000/api/v1/settings/acme';
   const CUSTOM_DIR = 'https://ca.internal.example.com/acme/acme/directory';
 
@@ -314,137 +299,107 @@ test.describe('Settings — ACME Server', () => {
     await page.request.put(API_SETTINGS_ACME, { data: { caUrl: '', caRootPem: '' } });
   });
 
-  test('shows the custom directory URL and CA root fields', async ({ page }) => {
-    await goToSection(page, 'ACME Server');
-    await expect(page.locator('input[name="caUrl"]')).toBeVisible();
-    await expect(page.locator('textarea[name="caRootPem"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save acme settings/i })).toBeVisible();
+  async function chooseCustom(page: Page) {
+    await open(page, '/certificates/settings');
+    await main(page).getByRole('group', { name: 'Issuer' }).getByRole('button', { name: 'Custom ACME directory' }).click();
+  }
+
+  test('the ACME contact e-mail is on Certificate settings', async ({ page }) => {
+    await open(page, '/certificates/settings');
+    const email = main(page).getByLabel('Contact e-mail');
+    await email.fill('test@example.com');
+    await expect(email).toHaveValue('test@example.com');
+    await expect(saveBar(page)).toContainText('1 unsaved change in Certificate settings');
+  });
+
+  test('shows the directory URL and CA root fields for a custom directory', async ({ page }) => {
+    await chooseCustom(page);
+    await expect(main(page).locator('input[name="caUrl"]')).toBeVisible();
+    await expect(main(page).locator('textarea[name="caRootPem"]')).toBeVisible();
   });
 
   test('saves a custom directory URL and persists it', async ({ page }) => {
-    await goToSection(page, 'ACME Server');
-    await page.locator('input[name="caUrl"]').fill(CUSTOM_DIR);
-    await page.getByRole('button', { name: /save acme settings/i }).click();
-    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 10_000 });
+    await chooseCustom(page);
+    await main(page).locator('input[name="caUrl"]').fill(CUSTOM_DIR);
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
+    await expect(saveBar(page).getByText('ACME settings saved successfully')).toBeVisible({ timeout: 10_000 });
 
-    await goToSection(page, 'ACME Server');
-    await expect(page.locator('input[name="caUrl"]')).toHaveValue(CUSTOM_DIR);
+    const res = await page.request.get(API_SETTINGS_ACME);
+    expect((await res.json()).caUrl).toBe(CUSTOM_DIR);
+
+    await open(page, '/certificates/settings');
+    await expect(main(page).locator('input[name="caUrl"]')).toHaveValue(CUSTOM_DIR);
   });
 
   test('rejects a non-HTTPS directory URL', async ({ page }) => {
-    await goToSection(page, 'ACME Server');
-    await page.locator('input[name="caUrl"]').fill('http://ca.internal.example.com/directory');
-    await page.getByRole('button', { name: /save acme settings/i }).click();
+    await chooseCustom(page);
+    await main(page).locator('input[name="caUrl"]').fill('http://ca.internal.example.com/directory');
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByText(/must use HTTPS/i)).toBeVisible({ timeout: 10_000 });
-  });
-
-  test('UI save is reflected in the REST API', async ({ page }) => {
-    await goToSection(page, 'ACME Server');
-    await page.locator('input[name="caUrl"]').fill(CUSTOM_DIR);
-    await page.getByRole('button', { name: /save acme settings/i }).click();
-    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 10_000 });
-
-    const res = await page.request.get(API_SETTINGS_ACME);
-    const data = await res.json();
-    expect(data.caUrl).toBe(CUSTOM_DIR);
   });
 });
 
-// ─── DNS Providers section ───────────────────────────────────────────────────
+// ─── DNS-01 providers and resolvers ─────────────────────────────────────────
 
-test.describe('Settings — DNS Providers', () => {
-  test('shows provider selector and add form', async ({ page }) => {
-    await goToSection(page, 'DNS Providers');
-    await expect(page.getByRole('heading', { name: 'DNS Providers' })).toBeVisible();
-    // Should have a select for provider
-    await expect(page.getByText(/select/i).first()).toBeVisible();
-  });
-
-  test('selecting a provider reveals its credential fields', async ({ page }) => {
-    await goToSection(page, 'DNS Providers');
-    // Click the provider select and pick one (Cloudflare or first available)
-    const selects = page.getByRole('combobox');
-    // Find the provider select (the one with "Select..." text)
-    const providerSelect = selects.last();
-    await providerSelect.click();
-    // Select the first non-"Select" option
-    const firstProvider = page.getByRole('option').filter({ hasNot: page.locator('text=/select/i') }).first();
-    await firstProvider.click();
-    // Credential input fields should now appear
-    // Most providers have at least one field (API token, etc.)
+test.describe('Certificate settings — DNS-01', () => {
+  test('adding a provider reveals its credential fields', async ({ page }) => {
+    await open(page, '/certificates/settings');
+    await main(page).getByRole('button', { name: 'Add provider' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('combobox', { name: 'DNS provider' }).click();
+    await page.getByRole('option').filter({ hasNotText: /choose a provider/i }).first().click();
     const formInputs = page.locator('form#dnsp-add-form input[type="text"], form#dnsp-add-form input[type="password"]');
     await expect(formInputs.first()).toBeVisible({ timeout: 3000 });
   });
-});
 
-// ─── DNS Resolvers section ───────────────────────────────────────────────────
-
-test.describe('Settings — DNS Resolvers', () => {
-  test('shows enable checkbox and resolver textareas', async ({ page }) => {
-    await goToSection(page, 'DNS Resolvers');
-    await expect(page.getByRole('heading', { name: 'DNS Resolvers' })).toBeVisible();
-    await expect(page.getByLabel('Enable custom DNS resolvers')).toBeVisible();
-    await expect(page.locator('textarea[name="resolvers"]')).toBeVisible();
-    await expect(page.locator('textarea[name="fallbacks"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save dns settings/i })).toBeVisible();
-  });
-
-  test('timeout field is visible', async ({ page }) => {
-    await goToSection(page, 'DNS Resolvers');
-    await expect(page.locator('input[name="timeout"]')).toBeVisible();
+  test('own resolvers show their fields when turned on', async ({ page }) => {
+    await open(page, '/certificates/settings');
+    const resolvers = main(page).locator('#dns-resolvers');
+    const toggle = resolvers.getByRole('switch', { name: 'Use my own resolvers' });
+    await expect(toggle).toBeVisible();
+    if (!(await toggle.isChecked())) await toggle.click();
+    await expect(resolvers.locator('textarea[name="resolvers"]')).toBeVisible();
+    await expect(resolvers.locator('textarea[name="fallbacks"]')).toBeVisible();
+    await expect(resolvers.locator('input[name="timeout"]')).toBeVisible();
   });
 });
 
-// ─── Upstream DNS Pinning section ────────────────────────────────────────────
+// ─── Upstream DNS pinning and forward auth ──────────────────────────────────
 
-test.describe('Settings — Upstream DNS Pinning', () => {
-  test('shows enable checkbox and address family selector', async ({ page }) => {
-    await goToSection(page, 'Upstream DNS Pinning');
-    await expect(page.getByRole('heading', { name: 'Upstream DNS Pinning' })).toBeVisible();
-    await expect(page.getByLabel('Enable upstream DNS pinning')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save upstream dns/i })).toBeVisible();
+test.describe('Host defaults — upstream DNS and forward auth', () => {
+  test('upstream DNS pinning shows the switch and the address family choices', async ({ page }) => {
+    await open(page, '/proxy-hosts/defaults');
+    const card = main(page).locator('#upstream-dns');
+    await expect(card.getByRole('switch', { name: 'Resolve upstream hostnames when applying' })).toBeVisible();
+    const family = card.getByRole('group', { name: 'Address family' });
+    await expect(family.getByRole('button', { name: /both/i })).toBeVisible();
+    await expect(family.getByRole('button', { name: /ipv6 only/i })).toBeVisible();
+    await expect(family.getByRole('button', { name: /ipv4 only/i })).toBeVisible();
   });
 
-  test('address family selector shows three options', async ({ page }) => {
-    await goToSection(page, 'Upstream DNS Pinning');
-    await page.getByRole('combobox').click();
-    await expect(page.getByRole('option', { name: /both/i })).toBeVisible();
-    await expect(page.getByRole('option', { name: /ipv6 only/i })).toBeVisible();
-    await expect(page.getByRole('option', { name: /ipv4 only/i })).toBeVisible();
-  });
-});
-
-// ─── Authentik Defaults section ──────────────────────────────────────────────
-
-test.describe('Settings — Authentik Defaults', () => {
-  test('shows outpost domain, upstream, and auth endpoint fields', async ({ page }) => {
-    await goToSection(page, 'Authentik Defaults');
-    await expect(page.getByRole('heading', { name: 'Authentik Defaults' })).toBeVisible();
-    await expect(page.locator('input[name="outpostDomain"]')).toBeVisible();
-    await expect(page.locator('input[name="outpostUpstream"]')).toBeVisible();
-    await expect(page.locator('input[name="authEndpoint"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save authentik/i })).toBeVisible();
-  });
-
-  test('fields have appropriate placeholders', async ({ page }) => {
-    await goToSection(page, 'Authentik Defaults');
-    await expect(page.locator('input[name="outpostDomain"]')).toHaveAttribute('placeholder', 'outpost.goauthentik.io');
-    await expect(page.locator('input[name="outpostUpstream"]')).toHaveAttribute('placeholder', 'http://authentik-server:9000');
+  test('forward auth shows the Authentik fields with their placeholders', async ({ page }) => {
+    await open(page, '/proxy-hosts/defaults');
+    const group = main(page).locator('#forward-auth');
+    await expect(group.getByRole('heading', { name: 'Authentik' })).toBeVisible();
+    await expect(group.locator('input[name="outpostDomain"]')).toHaveAttribute('placeholder', 'outpost.goauthentik.io');
+    await expect(group.locator('input[name="outpostUpstream"]')).toHaveAttribute('placeholder', 'http://authentik-server:9000');
+    await expect(group.getByRole('heading', { name: 'Generic forward auth' })).toBeVisible();
+    await expect(group.locator('input[name="authUpstream"]')).toBeVisible();
   });
 });
 
-// ─── OAuth Providers section ─────────────────────────────────────────────────
+// ─── OAuth providers ─────────────────────────────────────────────────────────
 
-test.describe('Settings — OAuth Providers', () => {
-  test('section renders with Add Provider button', async ({ page }) => {
-    await goToSection(page, 'OAuth Providers');
-    await expect(page.getByRole('heading', { name: 'OAuth Providers' })).toBeVisible();
-    await expect(page.getByRole('button', { name: /add provider/i })).toBeVisible();
+test.describe('OAuth providers', () => {
+  test('page renders with an Add provider button', async ({ page }) => {
+    await open(page, '/oauth-providers');
+    await expect(page.getByRole('heading', { level: 1, name: 'OAuth providers' })).toBeVisible();
+    await expect(main(page).getByRole('button', { name: /add provider/i }).first()).toBeVisible();
   });
 
-  test('clicking Add Provider opens dialog', async ({ page }) => {
-    await goToSection(page, 'OAuth Providers');
-    await page.getByRole('button', { name: /add provider/i }).click();
+  test('clicking Add provider opens the dialog', async ({ page }) => {
+    await open(page, '/oauth-providers');
+    await main(page).getByRole('button', { name: /add provider/i }).first().click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel(/name/i)).toBeVisible();
@@ -453,8 +408,8 @@ test.describe('Settings — OAuth Providers', () => {
   });
 
   test('create and delete an OAuth provider', async ({ page }) => {
-    await goToSection(page, 'OAuth Providers');
-    await page.getByRole('button', { name: /add provider/i }).click();
+    await open(page, '/oauth-providers');
+    await main(page).getByRole('button', { name: /add provider/i }).first().click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel(/^name/i).fill('E2E Test Provider');
     await dialog.getByLabel(/client id/i).fill('test-client-id-12345');
@@ -463,18 +418,15 @@ test.describe('Settings — OAuth Providers', () => {
     await dialog.getByRole('button', { name: /create provider/i }).click();
     await expect(dialog).not.toBeVisible({ timeout: 30_000 });
 
-    // Provider should appear in the list
-    await expect(page.getByText('E2E Test Provider')).toBeVisible({ timeout: 10_000 });
-
-    // Scope delete to the provider card containing the test provider
-    const providerCard = page.locator('div.rounded-md').filter({ hasText: 'E2E Test Provider' });
-    await providerCard.getByRole('button', { name: 'Delete provider' }).click();
-    await providerCard.getByRole('button', { name: /^confirm$/i }).click();
+    const providerRow = page.getByTestId('oauth-provider').filter({ hasText: 'E2E Test Provider' });
+    await expect(providerRow).toBeVisible({ timeout: 10_000 });
+    await providerRow.getByRole('button', { name: 'Delete E2E Test Provider' }).click();
+    await providerRow.getByRole('button', { name: /^confirm$/i }).click();
     await expect(page.getByText('E2E Test Provider')).not.toBeVisible({ timeout: 10_000 });
   });
 
   test('existing OAuth secrets never cross the API or React browser boundary', async ({ page }) => {
-    await page.goto('/settings');
+    await open(page, '/oauth-providers');
     const origin = new URL(page.url()).origin;
     const secret = `oauth-browser-secret-${Date.now()}`;
     const providerName = `Write-only OAuth ${Date.now()}`;
@@ -497,25 +449,20 @@ test.describe('Settings — OAuth Providers', () => {
     expect(createBody).not.toContain('clientSecret');
 
     try {
-      const navigation = await page.goto('/settings');
+      const navigation = await page.goto('/oauth-providers');
       const initialRscHtml = await navigation!.text();
       expect(initialRscHtml).not.toContain(secret);
       expect(initialRscHtml).not.toContain('clientSecret');
       expect(await page.content()).not.toContain(secret);
 
-      const itemResponse = await page.request.get(
-        `${origin}/api/v1/oauth-providers/${created.id}`
-      );
+      const itemResponse = await page.request.get(`${origin}/api/v1/oauth-providers/${created.id}`);
       const itemBody = await itemResponse.text();
       expect(itemResponse.ok()).toBeTruthy();
       expect(itemBody).not.toContain(secret);
       expect(itemBody).not.toContain('clientSecret');
 
-      await page.locator(SETTINGS_SIDEBAR)
-        .getByRole('button', { name: 'OAuth Providers', exact: true })
-        .click();
-      const providerCard = page.locator('div.rounded-md').filter({ hasText: providerName });
-      await providerCard.getByTitle('Edit provider').click();
+      const providerRow = page.getByTestId('oauth-provider').filter({ hasText: providerName });
+      await providerRow.getByTitle('Edit provider').click();
 
       const dialog = page.getByRole('dialog');
       await expect(dialog.getByText(/existing value cannot be viewed/i)).toBeVisible();
@@ -528,9 +475,7 @@ test.describe('Settings — OAuth Providers', () => {
       await dialog.getByRole('button', { name: /update provider/i }).click();
       await expect(dialog).not.toBeVisible({ timeout: 10_000 });
 
-      const preservedResponse = await page.request.get(
-        `${origin}/api/v1/oauth-providers/${created.id}`
-      );
+      const preservedResponse = await page.request.get(`${origin}/api/v1/oauth-providers/${created.id}`);
       const preserved = await preservedResponse.json() as { hasClientSecret: boolean };
       expect(preserved.hasClientSecret).toBe(true);
     } finally {
@@ -541,234 +486,111 @@ test.describe('Settings — OAuth Providers', () => {
   });
 });
 
-// ─── Global Geoblocking section ──────────────────────────────────────────────
+// ─── Geo blocking ────────────────────────────────────────────────────────────
 
-test.describe('Settings — Global Geoblocking', () => {
-  test('section renders with save button', async ({ page }) => {
-    await goToSection(page, 'Global Geoblocking');
-    await expect(page.getByRole('heading', { name: 'Global Geoblocking' })).toBeVisible();
-    await expect(page.getByRole('button', { name: /save geoblocking/i })).toBeVisible();
+test.describe('Geo blocking', () => {
+  test('shows the default rules and the GeoIP databases', async ({ page }) => {
+    await open(page, '/geo-blocking');
+    await expect(main(page).getByRole('heading', { name: 'Default rules' })).toBeVisible();
+    await expect(main(page).getByRole('heading', { name: 'GeoIP databases' })).toBeVisible();
+    await expect(main(page).getByText('/usr/share/GeoIP/GeoLite2-Country.mmdb')).toBeVisible();
+    await expect(saveBar(page).getByRole('button', { name: 'Save changes' })).toBeVisible();
   });
 });
 
-// ─── Metrics & Monitoring section ────────────────────────────────────────────
+// ─── Analytics settings ──────────────────────────────────────────────────────
 
-test.describe('Settings — Metrics & Monitoring', () => {
-  test('shows enable checkbox and port field', async ({ page }) => {
-    await goToSection(page, 'Metrics & Monitoring');
-    await expect(page.getByRole('heading', { name: 'Metrics & Monitoring' })).toBeVisible();
-    await expect(page.getByLabel('Enable metrics endpoint')).toBeVisible();
-    await expect(page.locator('input[name="port"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save metrics/i })).toBeVisible();
+test.describe('Analytics settings', () => {
+  test('shows ClickHouse retention read-only', async ({ page }) => {
+    await open(page, '/analytics/settings');
+    await expect(main(page).getByRole('heading', { name: 'Traffic analytics' })).toBeVisible();
+    await expect(main(page).getByText('Keep events for')).toBeVisible();
+    await expect(main(page).getByText(/CLICKHOUSE_RETENTION_DAYS/)).toBeVisible();
   });
 
-  test('port field has default value 9090', async ({ page }) => {
-    await goToSection(page, 'Metrics & Monitoring');
-    await expect(page.locator('input[name="port"]')).toHaveValue('9090');
+  test('access log: switch and format', async ({ page }) => {
+    await open(page, '/analytics/settings');
+    const card = main(page).locator('#logging');
+    await expect(card.getByRole('switch', { name: 'Log every proxied request' })).toBeVisible();
+    const format = card.getByRole('group', { name: 'Log format' });
+    await expect(format.getByRole('button', { name: 'JSON' })).toBeVisible();
+    await expect(format.getByRole('button', { name: /console/i })).toBeVisible();
   });
 
-  test('info callout mentions Docker network scrape endpoint', async ({ page }) => {
-    await goToSection(page, 'Metrics & Monitoring');
-    await expect(page.getByText(/caddy-proxy-manager-caddy/i)).toBeVisible();
-  });
-});
-
-// ─── Access Logging section ──────────────────────────────────────────────────
-
-test.describe('Settings — Access Logging', () => {
-  test('shows enable checkbox and format selector', async ({ page }) => {
-    await goToSection(page, 'Access Logging');
-    await expect(page.getByRole('heading', { name: 'Access Logging' })).toBeVisible();
-    await expect(page.getByLabel('Enable access logging')).toBeVisible();
-    await expect(page.getByRole('button', { name: /save logging/i })).toBeVisible();
-  });
-
-  test('format selector has JSON and Console options', async ({ page }) => {
-    await goToSection(page, 'Access Logging');
-    await page.getByRole('combobox').click();
-    await expect(page.getByRole('option', { name: 'JSON' })).toBeVisible();
-    await expect(page.getByRole('option', { name: /console/i })).toBeVisible();
-  });
-
-  test('info callout mentions docker exec command', async ({ page }) => {
-    await goToSection(page, 'Access Logging');
-    await expect(page.getByText(/docker exec/)).toBeVisible();
-  });
-});
-
-// ─── Cross-section navigation ────────────────────────────────────────────────
-
-test.describe('Settings — cross-section navigation', () => {
-  test('rapid section switching renders correct content each time', async ({ page }) => {
-    await page.goto('/settings');
-    const sidebar = page.locator(SETTINGS_SIDEBAR);
-
-    // Click General → verify heading → click Metrics → verify heading
-    await sidebar.getByRole('button', { name: 'General', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-
-    await sidebar.getByRole('button', { name: 'Metrics & Monitoring', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Metrics & Monitoring' })).toBeVisible();
-
-    await sidebar.getByRole('button', { name: 'OAuth Providers', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'OAuth Providers' })).toBeVisible();
-
-    await sidebar.getByRole('button', { name: 'Instance Sync', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Instance Sync' })).toBeVisible();
-  });
-
-  test('Cmd-K to navigate, then sidebar to navigate back', async ({ page }) => {
-    await page.goto('/settings');
-
-    // Use Cmd-K to go to Access Logging
-    await page.keyboard.press('Meta+k');
-    const dialog = page.getByRole('dialog');
-    await dialog.getByPlaceholder(/jump to a setting/i).fill('access');
-    await dialog.getByText('Access Logging').click();
-    await expect(page.getByRole('heading', { name: 'Access Logging' })).toBeVisible();
-
-    // Then use sidebar to go to General
-    await page.locator(SETTINGS_SIDEBAR).getByRole('button', { name: 'General', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+  test('metrics: switch, port 9090 and the scrape address', async ({ page }) => {
+    await open(page, '/analytics/settings');
+    const card = main(page).locator('#metrics');
+    await expect(card.getByRole('switch', { name: 'Expose /metrics on its own port' })).toBeVisible();
+    await expect(card.locator('input[name="port"]')).toHaveValue('9090');
+    await expect(card.getByText(/ingressi-caddy/).first()).toBeVisible();
   });
 });
 
 // ─── Mobile layout ───────────────────────────────────────────────────────────
 
-test.describe('Settings — mobile layout', () => {
+test.describe('Settings pages — mobile layout', () => {
   test.use({ viewport: { width: 393, height: 852 } });
 
-  test('sidebar is hidden on mobile', async ({ page }) => {
-    await page.goto('/settings');
-    // The <aside> sidebar should not be visible on mobile
-    await expect(page.locator(SETTINGS_SIDEBAR)).not.toBeVisible();
+  test('command palette works on mobile', async ({ page }) => {
+    await open(page, '/settings');
+    await page.keyboard.press('ControlOrMeta+k');
+    const { dialog, input } = commandPalette(page);
+    await input.fill('prometheus');
+    await dialog.getByRole('option', { name: /^Prometheus metrics/ }).click();
+    await expect(page).toHaveURL(/\/analytics\/settings#metrics$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Analytics settings' })).toBeVisible();
   });
 
-  test('mobile pill navigation is visible', async ({ page }) => {
-    await page.goto('/settings');
-    const mobileNav = page.getByTestId('mobile-settings-nav');
-    await expect(mobileNav.getByRole('button', { name: 'Instance Sync' })).toBeVisible();
-  });
-
-  test('mobile search button is visible', async ({ page }) => {
-    await page.goto('/settings');
-    const mobileNav = page.getByTestId('mobile-settings-nav');
-    await expect(mobileNav.getByText('Jump to setting...')).toBeVisible();
-  });
-
-  test('clicking a mobile pill switches the section', async ({ page }) => {
-    await page.goto('/settings');
-    const mobileNav = page.getByTestId('mobile-settings-nav');
-    const generalPill = mobileNav.getByRole('button', { name: 'General', exact: true });
-    await expect(generalPill).toBeVisible();
-    await generalPill.click();
-    await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-  });
-
-  test('mobile search opens Cmd-K palette', async ({ page }) => {
-    await page.goto('/settings');
-    const mobileNav = page.getByTestId('mobile-settings-nav');
-    await mobileNav.getByText('Jump to setting...').click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-  });
-
-  test('Cmd-K palette works on mobile', async ({ page }) => {
-    await page.goto('/settings');
-    const mobileNav = page.getByTestId('mobile-settings-nav');
-    await mobileNav.getByText('Jump to setting...').click();
-    const dialog = page.getByRole('dialog');
-    await dialog.getByPlaceholder(/jump to a setting/i).fill('metrics');
-    await dialog.getByText('Metrics & Monitoring').click();
-    await expect(page.getByRole('heading', { name: 'Metrics & Monitoring' })).toBeVisible();
-  });
-
-  test('detail content does not overflow viewport width', async ({ page }) => {
-    await page.goto('/settings');
-    await page.waitForLoadState('networkidle');
-    const bodyWidth = await page.evaluate(() => document.body.scrollWidth);
-    const viewportWidth = page.viewportSize()?.width ?? 393;
-    expect(bodyWidth).toBeLessThanOrEqual(viewportWidth + 5);
+  test('content does not overflow the viewport width', async ({ page }) => {
+    for (const { path } of SETTINGS_PAGES) {
+      await page.goto(path);
+      await page.waitForLoadState('networkidle');
+      const bodyWidth = await page.evaluate(() => document.body.scrollWidth);
+      const viewportWidth = page.viewportSize()?.width ?? 393;
+      expect(bodyWidth, path).toBeLessThanOrEqual(viewportWidth + 5);
+    }
   });
 });
 
 // ─── Form submissions via API ────────────────────────────────────────────────
 
-test.describe('Settings — form data round-trip via API', () => {
+test.describe('Settings pages — form data round-trip via API', () => {
   const API_SETTINGS_GENERAL = 'http://localhost:3000/api/v1/settings/general';
   const API_SETTINGS_METRICS = 'http://localhost:3000/api/v1/settings/metrics';
   const API_SETTINGS_LOGGING = 'http://localhost:3000/api/v1/settings/logging';
 
   test('general settings: UI save is reflected in API', async ({ page }) => {
-    await goToSection(page, 'General');
-    await page.locator('input[name="primaryDomain"]').fill('api-roundtrip.local');
-    await page.getByRole('button', { name: /save general settings/i }).click();
-    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 10_000 });
+    await open(page, '/settings');
+    await main(page).getByLabel('Primary domain').fill('api-roundtrip.local');
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
+    await expect(saveBar(page).getByText('General settings saved successfully')).toBeVisible({ timeout: 10_000 });
 
     const res = await page.request.get(API_SETTINGS_GENERAL);
-    const data = await res.json();
-    expect(data.primaryDomain).toBe('api-roundtrip.local');
+    expect((await res.json()).primaryDomain).toBe('api-roundtrip.local');
 
-    // Reset
-    await page.request.put(API_SETTINGS_GENERAL, {
-      data: { primaryDomain: 'caddyproxymanager.com', acmeEmail: '' },
-    });
+    await page.request.put(API_SETTINGS_GENERAL, { data: { primaryDomain: 'example.com', acmeEmail: '' } });
   });
 
-  test('metrics settings: enable and change port via UI, verify via API', async ({ page }) => {
-    await goToSection(page, 'Metrics & Monitoring');
-    const enableCheckbox = page.getByLabel('Enable metrics endpoint');
-    if (!(await enableCheckbox.isChecked())) {
-      await enableCheckbox.click();
-    }
-    await page.locator('input[name="port"]').fill('9191');
-    await page.getByRole('button', { name: /save metrics/i }).click();
-    await expect(page.getByText(/saved|success|applied/i).first()).toBeVisible({ timeout: 10_000 });
+  test('metrics and access log saved together in one save', async ({ page }) => {
+    await open(page, '/analytics/settings');
+    const metricsSwitch = main(page).getByRole('switch', { name: 'Expose /metrics on its own port' });
+    if (!(await metricsSwitch.isChecked())) await metricsSwitch.click();
+    await main(page).locator('input[name="port"]').fill('9191');
+    const logSwitch = main(page).getByRole('switch', { name: 'Log every proxied request' });
+    if (!(await logSwitch.isChecked())) await logSwitch.click();
+    await main(page).getByRole('group', { name: 'Log format' }).getByRole('button', { name: /console/i }).click();
 
-    const res = await page.request.get(API_SETTINGS_METRICS);
-    const data = await res.json();
-    expect(data.enabled).toBe(true);
-    expect(data.port).toBe(9191);
+    await saveBar(page).getByRole('button', { name: 'Save changes' }).click();
+    await expect(saveBar(page).getByText('Metrics settings saved and applied successfully')).toBeVisible({ timeout: 10_000 });
+    await expect(saveBar(page).getByText('Logging settings saved and applied successfully')).toBeVisible();
 
-    // Reset
+    const metrics = await (await page.request.get(API_SETTINGS_METRICS)).json();
+    expect(metrics.enabled).toBe(true);
+    expect(metrics.port).toBe(9191);
+    const logging = await (await page.request.get(API_SETTINGS_LOGGING)).json();
+    expect(logging.format).toBe('console');
+
     await page.request.put(API_SETTINGS_METRICS, { data: { enabled: false, port: 9090 } });
-  });
-
-  test('logging settings: change format via UI, verify via API', async ({ page }) => {
-    await goToSection(page, 'Access Logging');
-    // Enable logging
-    const enableCheckbox = page.getByLabel('Enable access logging');
-    if (!(await enableCheckbox.isChecked())) {
-      await enableCheckbox.click();
-    }
-    // Change format to console
-    await page.getByRole('combobox').click();
-    await page.getByRole('option', { name: /console/i }).click();
-    await page.getByRole('button', { name: /save logging/i }).click();
-    await expect(page.getByText(/saved|success|applied/i).first()).toBeVisible({ timeout: 10_000 });
-
-    const res = await page.request.get(API_SETTINGS_LOGGING);
-    const data = await res.json();
-    expect(data.format).toBe('console');
-
-    // Reset
     await page.request.put(API_SETTINGS_LOGGING, { data: { enabled: false, format: 'json' } });
-  });
-});
-
-// ─── Detail header ───────────────────────────────────────────────────────────
-
-test.describe('Settings — detail header', () => {
-  test('header shows description text for each section', async ({ page }) => {
-    await goToSection(page, 'General');
-    await expect(page.getByText('Primary domain and ACME contact email')).toBeVisible();
-
-    await page.locator(SETTINGS_SIDEBAR).getByRole('button', { name: 'DNS Providers', exact: true }).click();
-    await expect(page.getByText('Provider credentials for ACME DNS-01')).toBeVisible();
-  });
-
-  test('header breadcrumb trail includes Settings prefix', async ({ page }) => {
-    await page.goto('/settings');
-    const breadcrumb = page.getByTestId('settings-breadcrumb');
-    await expect(breadcrumb.getByText('Settings')).toBeVisible();
   });
 });

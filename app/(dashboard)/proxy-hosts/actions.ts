@@ -1,13 +1,22 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin } from "@/src/lib/auth";
+import { requirePermission } from "@/src/lib/auth";
+import {
+  assertDomainsFreeOutsideScope,
+  assertForwardAuthAccessAllowed,
+  assertProxyHostWriteAllowed,
+  getProxyHostInScope,
+  tagsForWrite,
+} from "@/src/lib/access-scope";
 import { actionError, actionSuccess, INITIAL_ACTION_STATE, type ActionState } from "@/src/lib/actions";
 import {
   createProxyHost,
   deleteProxyHost,
   updateProxyHost,
   type ProxyHostAuthentikInput,
+  type ProxyHostInput,
+  type ProxyHostForwardAuthInput,
   type LoadBalancerInput,
   type LoadBalancingPolicy,
   type DnsResolverInput,
@@ -21,13 +30,16 @@ import {
   type PathBlockRule,
   type PathRewriteRule,
   type ErrorPageRule,
-  type CpmForwardAuthInput,
+  type IngressiForwardAuthInput,
+  type ProxyHostRateLimitInput,
   PATH_BLOCK_STATUS_CODES,
   sanitizeErrorPageRules
 } from "@/src/lib/models/proxy-hosts";
 import { parseBodyLimitMib } from "@/src/lib/caddy-waf";
+import { gateHostChange, type GateOutcome } from "@/ee/approvals/requests";
+import { ApiValidationError } from "@/src/lib/api-errors";
 import { getCertificate } from "@/src/lib/models/certificates";
-import { setForwardAuthAccess } from "@/src/lib/models/forward-auth";
+import { getForwardAuthAccessForHost, setForwardAuthAccess } from "@/src/lib/models/forward-auth";
 import { getCloudflareSettings, type GeoBlockSettings } from "@/src/lib/settings";
 import {
   parseCsv,
@@ -56,15 +68,20 @@ async function validateAndSanitizeCertificateId(
     let warning: string;
 
     if (!cloudflareConfigured) {
-      warning = `Certificate ID ${certificateId} not found. Automatically using 'Managed by Caddy (Auto)'. Note: Without Cloudflare DNS integration, wildcard certificates require port 80 to be accessible for HTTP-01 challenges. Configure Cloudflare in Settings to enable DNS-01 challenges.`;
+      warning = `Certificate ${certificateId} not found, so Caddy obtains this host's certificate. Wildcard domains need a DNS provider: add one in Certificate settings.`;
     } else {
-      warning = `Certificate ID ${certificateId} not found. Automatically using 'Managed by Caddy (Auto)' which will provision certificates automatically using Caddy.`;
+      warning = `Certificate ${certificateId} not found, so Caddy obtains this host's certificate.`;
     }
 
     return { certificateId: null, warning };
   }
 
   return { certificateId };
+}
+
+/** Addresses separated by commas, spaces or new lines. */
+function parseAddresses(raw: FormDataEntryValue | null): string[] {
+  return typeof raw === "string" ? raw.split(/[\s,]+/).filter(Boolean) : [];
 }
 
 function parseAuthentikConfig(formData: FormData): ProxyHostAuthentikInput | undefined {
@@ -85,6 +102,7 @@ function parseAuthentikConfig(formData: FormData): ProxyHostAuthentikInput | und
   const trustedProxies = parseCsv(formData.get("authentikTrustedProxies"));
   const protectedPaths = parseCsv(formData.get("authentikProtectedPaths"));
   const excludedPaths = parseCsv(formData.get("authentikExcludedPaths"));
+  const bypassSources = parseAddresses(formData.get("authentikBypassSources"));
   const setHostHeader = formData.has("authentikSetHostHeaderPresent")
     ? parseCheckbox(formData.get("authentikSetHostHeader"))
     : undefined;
@@ -114,6 +132,9 @@ function parseAuthentikConfig(formData: FormData): ProxyHostAuthentikInput | und
   if (excludedPaths.length > 0 || formData.has("authentikExcludedPaths")) {
     result.excludedPaths = excludedPaths;
   }
+  if (bypassSources.length > 0 || formData.has("authentikBypassSources")) {
+    result.bypassSources = bypassSources;
+  }
   if (setHostHeader !== undefined) {
     result.setOutpostHostHeader = setHostHeader;
   }
@@ -121,29 +142,97 @@ function parseAuthentikConfig(formData: FormData): ProxyHostAuthentikInput | und
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function parseCpmForwardAuthConfig(formData: FormData): CpmForwardAuthInput | undefined {
-  if (!formData.has("cpmForwardAuthPresent")) {
+function parseIngressiForwardAuthConfig(formData: FormData): IngressiForwardAuthInput | undefined {
+  if (!formData.has("ingressiForwardAuthPresent")) {
     return undefined;
   }
 
-  const enabledIndicator = formData.has("cpmForwardAuthEnabledPresent");
+  const enabledIndicator = formData.has("ingressiForwardAuthEnabledPresent");
   const enabledValue = enabledIndicator
-    ? formData.has("cpmForwardAuthEnabled")
-      ? parseCheckbox(formData.get("cpmForwardAuthEnabled"))
+    ? formData.has("ingressiForwardAuthEnabled")
+      ? parseCheckbox(formData.get("ingressiForwardAuthEnabled"))
       : false
     : undefined;
-  const protectedPaths = parseCsv(formData.get("cpmForwardAuthProtectedPaths"));
-  const excludedPaths = parseCsv(formData.get("cpmForwardAuthExcludedPaths"));
+  const protectedPaths = parseCsv(formData.get("ingressiForwardAuthProtectedPaths"));
+  const excludedPaths = parseCsv(formData.get("ingressiForwardAuthExcludedPaths"));
+  const bypassSources = parseAddresses(formData.get("ingressiForwardAuthBypassSources"));
 
-  const result: CpmForwardAuthInput = {};
+  const result: IngressiForwardAuthInput = {};
   if (enabledValue !== undefined) {
     result.enabled = enabledValue;
   }
-  if (protectedPaths.length > 0 || formData.has("cpmForwardAuthProtectedPaths")) {
+  if (protectedPaths.length > 0 || formData.has("ingressiForwardAuthProtectedPaths")) {
     result.protected_paths = protectedPaths.length > 0 ? protectedPaths : null;
   }
-  if (excludedPaths.length > 0 || formData.has("cpmForwardAuthExcludedPaths")) {
+  if (excludedPaths.length > 0 || formData.has("ingressiForwardAuthExcludedPaths")) {
     result.excluded_paths = excludedPaths.length > 0 ? excludedPaths : null;
+  }
+  if (bypassSources.length > 0 || formData.has("ingressiForwardAuthBypassSources")) {
+    result.bypass_sources = bypassSources.length > 0 ? bypassSources : null;
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseForwardAuthConfig(formData: FormData): ProxyHostForwardAuthInput | undefined {
+  if (!formData.has("forwardAuthPresent")) {
+    return undefined;
+  }
+
+  const enabledIndicator = formData.has("forwardAuthEnabledPresent");
+  const enabledValue = enabledIndicator
+    ? formData.has("forwardAuthEnabled")
+      ? parseCheckbox(formData.get("forwardAuthEnabled"))
+      : false
+    : undefined;
+  const providerRaw = parseOptionalText(formData.get("forwardAuthProvider"));
+  const provider =
+    providerRaw === "authelia" || providerRaw === "custom" ? providerRaw : undefined;
+  const authUpstream = parseOptionalText(formData.get("forwardAuthUpstream"));
+  const authEndpoint = parseOptionalText(formData.get("forwardAuthEndpoint"));
+  const copyHeaders = parseCsv(formData.get("forwardAuthCopyHeaders"));
+  const trustedProxies = parseCsv(formData.get("forwardAuthTrustedProxies"));
+  const apiSplit = formData.has("forwardAuthApiSplitPresent")
+    ? parseCheckbox(formData.get("forwardAuthApiSplit"))
+    : undefined;
+  const apiBypassHeaders = parseCsv(formData.get("forwardAuthApiBypassHeaders"));
+  const protectedPaths = parseCsv(formData.get("forwardAuthProtectedPaths"));
+  const excludedPaths = parseCsv(formData.get("forwardAuthExcludedPaths"));
+  const bypassSources = parseAddresses(formData.get("forwardAuthBypassSources"));
+
+  const result: ProxyHostForwardAuthInput = {};
+  if (enabledValue !== undefined) {
+    result.enabled = enabledValue;
+  }
+  if (provider !== undefined) {
+    result.provider = provider;
+  }
+  if (authUpstream !== null) {
+    result.authUpstream = authUpstream;
+  }
+  if (authEndpoint !== null) {
+    result.authEndpoint = authEndpoint;
+  }
+  if (copyHeaders.length > 0 || formData.has("forwardAuthCopyHeaders")) {
+    result.copyHeaders = copyHeaders;
+  }
+  if (trustedProxies.length > 0 || formData.has("forwardAuthTrustedProxies")) {
+    result.trustedProxies = trustedProxies;
+  }
+  if (apiSplit !== undefined) {
+    result.apiSplit = apiSplit;
+  }
+  if (apiBypassHeaders.length > 0 || formData.has("forwardAuthApiBypassHeaders")) {
+    result.apiBypassHeaders = apiBypassHeaders;
+  }
+  if (protectedPaths.length > 0 || formData.has("forwardAuthProtectedPaths")) {
+    result.protectedPaths = protectedPaths;
+  }
+  if (excludedPaths.length > 0 || formData.has("forwardAuthExcludedPaths")) {
+    result.excludedPaths = excludedPaths;
+  }
+  if (bypassSources.length > 0 || formData.has("forwardAuthBypassSources")) {
+    result.bypassSources = bypassSources;
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
@@ -349,7 +438,7 @@ function parseWafConfig(formData: FormData): { waf?: WafHostConfig | null } {
   const wafMode: WafHostConfig["waf_mode"] = rawMode === "override" ? "override" : "merge";
   const rawEngineMode = formData.get("wafEngineMode");
   const engineMode: WafHostConfig["mode"] =
-    rawEngineMode === "On" ? "On" : rawEngineMode === "Off" ? "Off" : undefined;
+    rawEngineMode === "On" || rawEngineMode === "Off" || rawEngineMode === "DetectionOnly" ? rawEngineMode : undefined;
   const loadCrs = parseCheckbox(formData.get("wafLoadOwaspCrs"));
   const customDirectives = typeof formData.get("wafCustomDirectives") === "string"
     ? (formData.get("wafCustomDirectives") as string).trim()
@@ -552,6 +641,21 @@ function parseErrorPagesConfig(formData: FormData): ErrorPageRule[] | null {
   }
 }
 
+/**
+ * The rate limiting section's JSON. Validated by the model (strictly, so a
+ * bad rule fails the save with its message); an unreadable payload too.
+ */
+function parseRateLimitConfig(formData: FormData): ProxyHostRateLimitInput | null | undefined {
+  if (!formData.has("rateLimitPresent")) return undefined;
+  const raw = formData.get("rateLimitJson");
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    return JSON.parse(raw) as ProxyHostRateLimitInput;
+  } catch {
+    throw new ApiValidationError("Invalid rate limiting payload");
+  }
+}
+
 function parseUpstreamDnsResolutionConfig(formData: FormData): UpstreamDnsResolutionInput | undefined {
   if (!formData.has("upstreamDnsResolutionPresent")) {
     return undefined;
@@ -579,14 +683,22 @@ function parseUpstreamDnsResolutionConfig(formData: FormData): UpstreamDnsResolu
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+/** The dialog's answer when a change approval policy turned the change into a change request. */
+function changeRequestState(gate: GateOutcome): ActionState {
+  revalidatePath("/proxy-hosts");
+  revalidatePath("/approvals");
+  return { status: "success", message: gate.message, changeRequest: { id: gate.request.id, status: gate.request.status } };
+}
+
 export async function createProxyHostAction(
   _prevState: ActionState = INITIAL_ACTION_STATE,
   formData: FormData
 ): Promise<ActionState> {
   void _prevState;
   try {
-    const session = await requireAdmin();
+    const session = await requirePermission("proxy_hosts:write");
     const userId = Number(session.user.id);
+    const access = session.access;
 
     // Parse certificateId safely
     const parsedCertificateId = parseCertificateId(formData.get("certificateId"));
@@ -602,8 +714,7 @@ export async function createProxyHostAction(
       console.warn(`[createProxyHostAction] ${warning}`);
     }
 
-    const host = await createProxyHost(
-      {
+    const input: ProxyHostInput = {
         name: String(formData.get("name") ?? "Untitled"),
         domains: parseCsv(formData.get("domains")),
         upstreams: parseUpstreams(formData.get("upstreams")),
@@ -616,7 +727,8 @@ export async function createProxyHostAction(
         customPreHandlersJson: parseOptionalText(formData.get("customPreHandlersJson")),
         customReverseProxyJson: parseOptionalText(formData.get("customReverseProxyJson")),
         authentik: parseAuthentikConfig(formData),
-        cpmForwardAuth: parseCpmForwardAuthConfig(formData),
+        ingressiForwardAuth: parseIngressiForwardAuthConfig(formData),
+        forwardAuth: parseForwardAuthConfig(formData),
         loadBalancer: parseLoadBalancerConfig(formData),
         dnsResolver: parseDnsResolverConfig(formData),
         upstreamDnsResolution: parseUpstreamDnsResolutionConfig(formData),
@@ -630,14 +742,36 @@ export async function createProxyHostAction(
         pathBlocks: parsePathBlocksConfig(formData),
         pathRewrites: parsePathRewritesConfig(formData),
         errorPages: parseErrorPagesConfig(formData),
-      },
-      userId
-    );
+        rateLimit: parseRateLimitConfig(formData),
+    };
+    // A tag scope limits the tags (one of the role's is required); other
+    // non-administrator limits are in src/lib/access-scope.ts.
+    const tags = tagsForWrite(access, "proxy_hosts", formData.has("tags") ? String(formData.get("tags") ?? "") : undefined, null);
+    if (tags !== undefined) input.tags = tags;
+    await assertProxyHostWriteAllowed(access, input, null);
+    await assertDomainsFreeOutsideScope(access, input.domains, null);
+    const faUserIds = formData.getAll("ingressiFaUserId").map((v) => Number(v)).filter((n) => n > 0);
+    const faGroupIds = formData.getAll("ingressiFaGroupId").map((v) => Number(v)).filter((n) => n > 0);
+    await assertForwardAuthAccessAllowed(access, { userIds: faUserIds, groupIds: faGroupIds }, { userIds: [], groupIds: [] });
 
-    // Save forward auth access if CPM forward auth is enabled
-    const faUserIds = formData.getAll("cpmFaUserId").map((v) => Number(v)).filter((n) => n > 0);
-    const faGroupIds = formData.getAll("cpmFaGroupId").map((v) => Number(v)).filter((n) => n > 0);
-    if (host.cpmForwardAuth?.enabled && (faUserIds.length > 0 || faGroupIds.length > 0)) {
+    // A host a change approval policy protects: submit a change request (or apply it as an emergency change).
+    const gate = await gateHostChange({
+      access,
+      change: {
+        targetType: "proxy_host",
+        kind: "create",
+        target: null,
+        input: { host: input, ...(faUserIds.length > 0 || faGroupIds.length > 0 ? { forwardAuthAccess: { userIds: faUserIds, groupIds: faGroupIds } } : {}) },
+      },
+      note: formData.get("changeNote"),
+      emergencyReason: formData.get("emergencyReason"),
+    });
+    if (gate) return changeRequestState(gate);
+
+    const host = await createProxyHost(input, userId);
+
+    // Save forward auth access if Ingressi forward auth is enabled
+    if (host.ingressiForwardAuth?.enabled && (faUserIds.length > 0 || faGroupIds.length > 0)) {
       await setForwardAuthAccess(host.id, { userIds: faUserIds, groupIds: faGroupIds }, userId);
     }
 
@@ -661,8 +795,11 @@ export async function updateProxyHostAction(
 ): Promise<ActionState> {
   void _prevState;
   try {
-    const session = await requireAdmin();
+    const session = await requirePermission("proxy_hosts:write");
     const userId = Number(session.user.id);
+    const access = session.access;
+    // 404 for a host outside the role's tag scope, as for a missing one.
+    const existing = await getProxyHostInScope(access, id);
     const boolField = (key: string) => (formData.has(`${key}Present`) ? parseCheckbox(formData.get(key)) : undefined);
 
     // Parse and validate certificate_id if present
@@ -686,9 +823,7 @@ export async function updateProxyHostAction(
       }
     }
 
-    await updateProxyHost(
-      id,
-      {
+    const input: Partial<ProxyHostInput> = {
         name: formData.get("name") ? String(formData.get("name")) : undefined,
         domains: formData.get("domains") ? parseCsv(formData.get("domains")) : undefined,
         upstreams: formData.get("upstreams") ? parseUpstreams(formData.get("upstreams")) : undefined,
@@ -706,7 +841,8 @@ export async function updateProxyHostAction(
           ? parseOptionalText(formData.get("customReverseProxyJson"))
           : undefined,
         authentik: parseAuthentikConfig(formData),
-        cpmForwardAuth: parseCpmForwardAuthConfig(formData),
+        ingressiForwardAuth: parseIngressiForwardAuthConfig(formData),
+        forwardAuth: parseForwardAuthConfig(formData),
         loadBalancer: parseLoadBalancerConfig(formData),
         dnsResolver: parseDnsResolverConfig(formData),
         upstreamDnsResolution: parseUpstreamDnsResolutionConfig(formData),
@@ -720,15 +856,44 @@ export async function updateProxyHostAction(
         pathBlocks: formData.has("pathBlocksJson") ? parsePathBlocksConfig(formData) : undefined,
         pathRewrites: formData.has("pathRewritesJson") ? parsePathRewritesConfig(formData) : undefined,
         errorPages: formData.has("errorPagesJson") ? parseErrorPagesConfig(formData) : undefined,
+        rateLimit: parseRateLimitConfig(formData),
+    };
+    const tags = tagsForWrite(access, "proxy_hosts", formData.has("tags") ? String(formData.get("tags") ?? "") : undefined, existing.tags);
+    if (tags !== undefined) input.tags = tags;
+    await assertProxyHostWriteAllowed(access, input, existing);
+    await assertDomainsFreeOutsideScope(access, input.domains, existing.id);
+    const faUserIds = formData.getAll("ingressiFaUserId").map((v) => Number(v)).filter((n) => n > 0);
+    const faGroupIds = formData.getAll("ingressiFaGroupId").map((v) => Number(v)).filter((n) => n > 0);
+    if (formData.has("ingressiForwardAuthPresent")) {
+      const current = await getForwardAuthAccessForHost(existing.id);
+      await assertForwardAuthAccessAllowed(
+        access,
+        { userIds: faUserIds, groupIds: faGroupIds },
+        {
+          userIds: current.filter((entry) => entry.userId !== null).map((entry) => entry.userId!),
+          groupIds: current.filter((entry) => entry.groupId !== null).map((entry) => entry.groupId!),
+        }
+      );
+    }
+
+    const gate = await gateHostChange({
+      access,
+      change: {
+        targetType: "proxy_host",
+        kind: "update",
+        target: existing,
+        input: { host: input, ...(formData.has("ingressiForwardAuthPresent") ? { forwardAuthAccess: { userIds: faUserIds, groupIds: faGroupIds } } : {}) },
       },
-      userId
-    );
+      note: formData.get("changeNote"),
+      emergencyReason: formData.get("emergencyReason"),
+    });
+    if (gate) return changeRequestState(gate);
+
+    await updateProxyHost(existing.id, input, userId);
 
     // Save forward auth access if the section is present in the form
-    if (formData.has("cpmForwardAuthPresent")) {
-      const faUserIds = formData.getAll("cpmFaUserId").map((v) => Number(v)).filter((n) => n > 0);
-      const faGroupIds = formData.getAll("cpmFaGroupId").map((v) => Number(v)).filter((n) => n > 0);
-      await setForwardAuthAccess(id, { userIds: faUserIds, groupIds: faGroupIds }, userId);
+    if (formData.has("ingressiForwardAuthPresent")) {
+      await setForwardAuthAccess(existing.id, { userIds: faUserIds, groupIds: faGroupIds }, userId);
     }
 
     revalidatePath("/proxy-hosts");
@@ -746,13 +911,22 @@ export async function updateProxyHostAction(
 
 export async function deleteProxyHostAction(
   id: number,
-  _prevState: ActionState = INITIAL_ACTION_STATE
+  _prevState: ActionState = INITIAL_ACTION_STATE,
+  formData?: FormData
 ): Promise<ActionState> {
   void _prevState;
   try {
-    const session = await requireAdmin();
+    const session = await requirePermission("proxy_hosts:write");
     const userId = Number(session.user.id);
-    await deleteProxyHost(id, userId);
+    const existing = await getProxyHostInScope(session.access, id);
+    const gate = await gateHostChange({
+      access: session.access,
+      change: { targetType: "proxy_host", kind: "delete", target: existing, input: {} },
+      note: formData?.get("changeNote"),
+      emergencyReason: formData?.get("emergencyReason"),
+    });
+    if (gate) return changeRequestState(gate);
+    await deleteProxyHost(existing.id, userId);
     revalidatePath("/proxy-hosts");
     return actionSuccess("Proxy host deleted.");
   } catch (error) {
@@ -766,9 +940,15 @@ export async function toggleProxyHostAction(
   enabled: boolean
 ): Promise<ActionState> {
   try {
-    const session = await requireAdmin();
+    const session = await requirePermission("proxy_hosts:write");
     const userId = Number(session.user.id);
-    await updateProxyHost(id, { enabled }, userId);
+    const existing = await getProxyHostInScope(session.access, id);
+    const gate = await gateHostChange({
+      access: session.access,
+      change: { targetType: "proxy_host", kind: "update", target: existing, input: { host: { enabled } } },
+    });
+    if (gate) return changeRequestState(gate);
+    await updateProxyHost(existing.id, { enabled }, userId);
     revalidatePath("/proxy-hosts");
     return actionSuccess(`Proxy host ${enabled ? "enabled" : "disabled"}.`);
   } catch (error) {

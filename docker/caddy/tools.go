@@ -15,6 +15,7 @@ package tools
 
 import (
 	_ "github.com/caddy-dns/acmedns"
+	_ "github.com/caddy-dns/bunny"
 	_ "github.com/caddy-dns/cloudflare"
 	_ "github.com/caddy-dns/cloudns"
 	_ "github.com/caddy-dns/desec"
@@ -24,6 +25,7 @@ import (
 	_ "github.com/caddy-dns/godaddy"
 	_ "github.com/caddy-dns/hetzner"
 	_ "github.com/caddy-dns/infomaniak"
+	_ "github.com/caddy-dns/inwx"
 	_ "github.com/caddy-dns/ionos"
 	_ "github.com/caddy-dns/linode"
 	_ "github.com/caddy-dns/namecheap"
@@ -31,6 +33,7 @@ import (
 	_ "github.com/caddy-dns/njalla"
 	_ "github.com/caddy-dns/ovh"
 	_ "github.com/caddy-dns/porkbun"
+	_ "github.com/caddy-dns/rfc2136"
 	_ "github.com/caddy-dns/route53"
 	_ "github.com/caddy-dns/spaceship"
 	_ "github.com/caddy-dns/vultr"
@@ -38,4 +41,6 @@ import (
 	_ "github.com/corazawaf/coraza-caddy/v2"
 	_ "github.com/fuomag9/caddy-blocker-plugin"
 	_ "github.com/mholt/caddy-l4"
+	_ "github.com/mholt/caddy-ratelimit"
+	_ "github.com/pberkel/caddy-storage-redis"
 )

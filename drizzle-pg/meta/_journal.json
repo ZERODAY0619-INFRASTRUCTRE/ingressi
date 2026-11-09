@@ -1,0 +1,111 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1791230000000,
+      "tag": "0000_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1791240000000,
+      "tag": "0053_cluster_nodes",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1791250000000,
+      "tag": "0054_shared_runtime_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1791270000000,
+      "tag": "0055_cluster_node_instance",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1791280000000,
+      "tag": "0056_monetization_phase2",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1791290000000,
+      "tag": "0057_drop_virtual_patching",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1791300000000,
+      "tag": "0058_alert_silences",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1791310000000,
+      "tag": "0059_drop_multi_tenancy",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791320000000,
+      "tag": "0060_session_sign_in_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1791330000000,
+      "tag": "0061_drop_license_and_usage_ping",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1791340000000,
+      "tag": "0062_attention_dismissals",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1791441041010,
+      "tag": "0063_default_sort_options",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1791448555727,
+      "tag": "0064_alert_rules_built_in",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1792010100746,
+      "tag": "0065_proxy_hosts_group",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1793705840156,
+      "tag": "0066_access_list_skip_auth",
+      "breakpoints": true
+    }
+  ]
+}

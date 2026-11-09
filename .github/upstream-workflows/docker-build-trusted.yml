@@ -5,13 +5,18 @@ on:
     branches:
       - main
       - develop
+      # Release lines, e.g. lts/2.0
+      - 'lts/**'
     tags:
       - 'v*'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository_owner }}/ingressi
+  # Images are pushed with GHCR_PUSH_TOKEN: a classic personal access token of
+  # the maintainer with only the write:packages scope.
+  GHCR_PUSH_USER: fuomag9
 
 jobs:
   build-and-push:
@@ -19,6 +24,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing proves the image came from this workflow.
+      id-token: write
 
     strategy:
       matrix:
@@ -26,50 +33,109 @@ jobs:
           - service: web
             dockerfile: docker/web/Dockerfile
             context: .
+            description: "Ingressi dashboard and REST API: configures the Ingressi reverse proxy"
           - service: caddy
             dockerfile: docker/caddy/Dockerfile
             context: .
+            description: "Ingressi reverse proxy: Caddy with Ingressi's modules"
           - service: l4-port-manager
             dockerfile: docker/l4-port-manager/Dockerfile
             context: .
+            description: "Publishes the TCP and UDP ports of Ingressi's L4 proxy hosts"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          # Every tag, to tell whether this release is the newest one.
+          fetch-depth: 0
+
+      - name: Decide which moving tags this release gets
+        id: release
+        run: |
+          # A patch release on an older release line (lts/2.0 after 2.3 shipped) must not
+          # move `latest`, or the major tag, back to an older version. Only the
+          # newest stable release gets `latest`, and only the newest stable
+          # release of its major version gets the major tag. The minor tag
+          # (2.0) always follows its own line.
+          latest=false
+          latest_in_major=false
+          if [[ "${GITHUB_REF}" == refs/tags/v* && "${GITHUB_REF_NAME}" != *-* ]]; then
+            version="${GITHUB_REF_NAME}"
+            major="${version%%.*}"
+            newest="$(git tag -l 'v*' | grep -v -e '-' | sort -V | tail -n 1)"
+            newest_in_major="$(git tag -l "${major}.*" | grep -v -e '-' | sort -V | tail -n 1)"
+            [ "$version" = "$newest" ] && latest=true
+            [ "$version" = "$newest_in_major" ] && latest_in_major=true
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "latest_in_major=$latest_in_major" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Check the push token
+        env:
+          GHCR_PUSH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN }}
+        run: |
+          if [ -z "$GHCR_PUSH_TOKEN" ]; then
+            echo "::error::Set the GHCR_PUSH_TOKEN secret: a classic personal access token of ${GHCR_PUSH_USER} with the write:packages scope."
+            exit 1
+          fi
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ env.GHCR_PUSH_USER }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata (tags, labels, annotations)
         id: meta
         uses: docker/metadata-action@v6
+        env:
+          # Multi-arch images: GHCR links a package to the repository through
+          # org.opencontainers.image.source on the image index, so the OCI
+          # metadata goes on the index as well as on each platform manifest.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.service }}
+          # Each image says what it is, instead of inheriting the repository
+          # description.
+          labels: |
+            org.opencontainers.image.licenses=MIT AND Elastic-2.0
+            org.opencontainers.image.description=${{ matrix.description }}
+          annotations: |
+            org.opencontainers.image.licenses=MIT AND Elastic-2.0
+            org.opencontainers.image.description=${{ matrix.description }}
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.service }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}},enable=${{ steps.release.outputs.latest_in_major == 'true' }}
             type=match,pattern=v(.*),group=1
             type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+            # `latest` must track the newest stable release, not the default
+            # branch: the repo's default branch is `develop`, so
+            # {{is_default_branch}} fired on every dev push and moved `latest`
+            # to unreleased builds (issue #281). Tag it only on the newest
+            # stable v* tag: not on pre-release tags (e.g. v1.12.0-rc.1), and
+            # not on patch releases of an older line.
+            type=raw,value=latest,enable=${{ steps.release.outputs.latest == 'true' }}
 
       - name: Compute app version
         id: app-version
         run: |
           # Bake the release version (git tag without the leading v) into the
-          # image for tag builds; branch builds fall back to package.json.
+          # image for tag builds. Non-release (branch/dev) builds use the git
+          # commit SHA so the UI shows an identifiable build reference rather
+          # than a stale package.json placeholder (e.g. 1.0.0). See
+          # next.config.mjs for the resolution order.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push Docker image
@@ -81,6 +147,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             APP_VERSION=${{ steps.app-version.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.service }}
@@ -88,3 +155,17 @@ jobs:
           platforms: linux/amd64,linux/arm64
           sbom: true
           provenance: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign the pushed images
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign each repository the image was pushed to, by digest, so the
+          # signature covers exactly what was built here.
+          for repository in $(echo "$TAGS" | sed 's/:[^:]*$//' | sort -u); do
+            cosign sign --yes "${repository}@${DIGEST}"
+          done

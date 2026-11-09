@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
-import { auth } from "@/src/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { auth, portalMayReuseSession } from "@/src/lib/auth";
 import { config } from "@/src/lib/config";
+import { FORWARD_AUTH_CALLBACK_PATH } from "@/src/lib/forward-auth-trust";
 import {
   createForwardAuthSession,
   createExchangeCode,
@@ -11,13 +12,16 @@ import {
 import { logAuditEvent } from "@/src/lib/audit";
 
 /**
- * Forward auth session login — uses an existing NextAuth session to create
- * a forward auth session. Called automatically when the portal detects the
- * user is already logged in (e.g. after OAuth).
+ * Forward auth session login: signs the visitor in to the protected app with
+ * their dashboard session. Only a session an identity provider created (OIDC,
+ * SAML or LDAP sign-in) qualifies, so single sign-on across apps comes from
+ * that provider; a password or passkey session gets 401 and the visitor signs
+ * in at the portal. Called by the portal when it finds such a session
+ * (e.g. after the OAuth return).
  */
 export async function POST(request: NextRequest) {
   try {
-    // CSRF: verify the request originates from the CPM portal
+    // CSRF: verify the request originates from the dashboard portal
     const origin = request.headers.get("origin");
     const baseOrigin = new URL(config.baseUrl).origin;
     if (!origin || origin !== baseOrigin) {
@@ -27,6 +31,9 @@ export async function POST(request: NextRequest) {
     const session = await auth();
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+    if (!(await portalMayReuseSession())) {
+      return NextResponse.json({ error: "Sign in to continue." }, { status: 401 });
     }
 
     const body = await request.json();
@@ -48,7 +55,7 @@ export async function POST(request: NextRequest) {
     // Authorize the concrete proxy host captured by the one-time intent.
     const hasAccess = await checkHostAccess(userId, intent.audience.proxyHostId);
     if (!hasAccess) {
-      logAuditEvent({
+      await logAuditEvent({
         userId,
         action: "forward_auth_access_denied",
         entityType: "proxy_host",
@@ -68,7 +75,7 @@ export async function POST(request: NextRequest) {
       intent.audience,
     );
 
-    logAuditEvent({
+    await logAuditEvent({
       userId,
       action: "forward_auth_login",
       entityType: "user",
@@ -76,7 +83,7 @@ export async function POST(request: NextRequest) {
       summary: `Forward auth login (session) for user ${session.user.email} to ${targetUrl.hostname}`
     });
 
-    const callbackUrl = new URL("/.cpm-auth/callback", intent.audience.origin);
+    const callbackUrl = new URL(FORWARD_AUTH_CALLBACK_PATH, intent.audience.origin);
     callbackUrl.searchParams.set("code", rawCode);
     const browserNonce = randomBytes(32).toString("hex");
     callbackUrl.searchParams.set("nonce", browserNonce);

@@ -33,21 +33,33 @@ github.com/caddy-dns/njalla
 github.com/caddy-dns/netcup
 github.com/caddy-dns/spaceship
 github.com/caddy-dns/desec
+github.com/caddy-dns/bunny
 github.com/caddy-dns/dynu
 github.com/caddy-dns/acmedns
 github.com/caddy-dns/infomaniak
+github.com/caddy-dns/inwx
 github.com/caddy-dns/cloudns
+github.com/caddy-dns/rfc2136
 github.com/mholt/caddy-l4
+github.com/mholt/caddy-ratelimit
 github.com/fuomag9/caddy-blocker-plugin
 github.com/corazawaf/coraza-caddy/v2
+github.com/pberkel/caddy-storage-redis
 MODULES
 
-cel_go_version="$(module_version github.com/google/cel-go)"
-set -- "$@" --replace "github.com/google/cel-go=github.com/google/cel-go@$cel_go_version"
+# Set by update-compatibility-pins.sh only while Caddy imports github.com/google/cel-go.
+cel_go_version="$(go list -m -f '{{if .Replace}}{{.Replace.Version}}{{end}}' github.com/google/cel-go 2>/dev/null || true)"
+if [ -n "$cel_go_version" ]; then
+  set -- "$@" --replace "github.com/google/cel-go=github.com/google/cel-go@$cel_go_version"
+fi
 
 # xcaddy creates a new module, so an indirect go.mod pin is not inherited.
 # Preserve the reviewed gRPC version instead of taking a plugin's older minimum.
 grpc_version="$(module_version google.golang.org/grpc)"
 set -- "$@" --replace "google.golang.org/grpc=google.golang.org/grpc@$grpc_version"
+
+# Preserve the deployed x/net security floor in the generated build module.
+net_version="$(module_version golang.org/x/net)"
+set -- "$@" --replace "golang.org/x/net=golang.org/x/net@$net_version"
 
 GOOS="$TARGETOS" GOARCH="$TARGETARCH" xcaddy build "$@" --output /usr/bin/caddy

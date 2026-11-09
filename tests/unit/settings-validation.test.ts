@@ -113,6 +113,45 @@ describe("REST settings runtime validation", () => {
     expect(validateSettingsGroup("waf", input)).toBe(input);
   });
 
+  // Discussion #146: users reported a custom SecRuleUpdateActionById being
+  // silently ignored. Unlike a plain SecRule (which is allowed and works),
+  // the rule-mutation directive is dropped by the allowlist — so it must be
+  // reported at save time, not fail silently.
+  it("rejects custom WAF directives the allowlist will drop", () => {
+    expect(() => validateSettingsGroup("waf", {
+      ...validGroups.waf,
+      custom_directives: 'SecRuleUpdateActionById 930130 "block"',
+    })).toThrow(/will be dropped and never sent to Caddy/);
+    expect(() => validateSettingsGroup("waf", {
+      ...validGroups.waf,
+      custom_directives: 'Include @owasp_crs/*.conf',
+    })).toThrow(/will be dropped and never sent to Caddy/);
+  });
+
+  it("only rejects WAF directive lines an update newly drops", () => {
+    const legacy = 'SecRule ARGS "@pmFromFile /etc/hosts" "id:1,deny"';
+    const previousWaf = { custom_directives: legacy, load_owasp_crs: true };
+    expect(() => validateSettingsGroup("waf", { ...validGroups.waf, custom_directives: legacy })).toThrow(/will be dropped/);
+    expect(() => validateSettingsGroup(
+      "waf",
+      { ...validGroups.waf, mode: "DetectionOnly", custom_directives: legacy },
+      { previousWaf }
+    )).not.toThrow();
+    expect(() => validateSettingsGroup(
+      "waf",
+      { ...validGroups.waf, custom_directives: `${legacy}\nSecRuleUpdateActionById 930130 "block"` },
+      { previousWaf }
+    )).toThrow(/SecRuleUpdateActionById/);
+  });
+
+  it("accepts custom WAF directives the allowlist permits", () => {
+    const input = {
+      ...validGroups.waf,
+      custom_directives: 'SecRule REQUEST_URI "@contains /admin" "id:1001,phase:1,deny,status:403,log"',
+    };
+    expect(validateSettingsGroup("waf", input)).toBe(input);
+  });
+
   it("rejects unsupported DNS providers and credential keys", () => {
     expect(() => validateSettingsGroup("dns-provider", {
       providers: { malicious: { command: "run" } },
@@ -162,9 +201,69 @@ describe("REST settings runtime validation", () => {
     expect(validateSettingsGroup("acme", { caRootPem })).toEqual({ caRootPem });
   });
 
+  it("validates the ACME e-mail address", () => {
+    for (const acmeEmail of ["admin@example.com", "first.last+tag@mail.example.co.uk"]) {
+      expect(validateSettingsGroup("general", { primaryDomain: "example.com", acmeEmail })).toEqual({ primaryDomain: "example.com", acmeEmail });
+    }
+    for (const acmeEmail of ["admin", "admin@example", "@example.com", "admin@.example.com", "admin@example..com", "admin@example.com."]) {
+      expect(() => validateSettingsGroup("general", { primaryDomain: "example.com", acmeEmail })).toThrow(/valid email address/);
+    }
+  });
+
   it("rejects non-line-break control characters in ACME root PEM values", () => {
     expect(() => validateSettingsGroup("acme", {
       caRootPem: "-----BEGIN CERTIFICATE-----\nsecret\u0000suffix\n-----END CERTIFICATE-----",
     })).toThrow(/control characters/);
+  });
+});
+
+describe("trusted-proxies.proxy_protocol_ranges", () => {
+  const base = { ranges: [] as string[] };
+
+  it("stores the PROXY protocol sources normalized and leaves the other fields as given", () => {
+    const input = { ranges: ["private_ranges"], strict: true, proxy_protocol_ranges: [" 192.168.1.1/24", "10.0.0.5", "10.0.0.5/32", "2001:db8::1/64"] };
+    expect(validateSettingsGroup("trusted-proxies", input)).toEqual({
+      ranges: ["private_ranges"],
+      strict: true,
+      proxy_protocol_ranges: ["192.168.1.0/24", "10.0.0.5", "2001:db8::/64"],
+    });
+    // The input itself is not changed.
+    expect(input.proxy_protocol_ranges[0]).toBe(" 192.168.1.1/24");
+  });
+
+  it("accepts an empty list", () => {
+    expect(validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: [] })).toEqual({ ...base, proxy_protocol_ranges: [] });
+  });
+
+  it("refuses sources that would let any client set its address", () => {
+    expect(() => validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: ["0.0.0.0/0"] })).toThrow(
+      /trusted-proxies\.proxy_protocol_ranges: "0\.0\.0\.0\/0" matches every address/
+    );
+    expect(() => validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: ["10.0.0.1", "::/0"] })).toThrow(/matches every address/);
+    expect(() => validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: ["private_ranges"] })).toThrow(
+      /"private_ranges" is not accepted here/
+    );
+  });
+
+  it("refuses entries that are not addresses, and values that are not lists of strings", () => {
+    for (const [value, message] of [
+      [["firewall.lan"], /"firewall\.lan" is not an IP address or a CIDR range/],
+      [["10.0.0.0/33"], /is not an IP address or a CIDR range/],
+      [["10.0.0.1", 5], /proxy_protocol_ranges: \[1\] must be a string/],
+      ["10.0.0.1", /proxy_protocol_ranges must be an array/],
+      [{ allow: ["10.0.0.1"] }, /proxy_protocol_ranges must be an array/],
+      [null, /proxy_protocol_ranges must be an array/],
+    ] as const) {
+      expect(() => validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: value }), JSON.stringify(value)).toThrow(message);
+    }
+  });
+
+  it("refuses more than 100 sources", () => {
+    const many = Array.from({ length: 101 }, (_, index) => `10.0.${index}.1`);
+    expect(() => validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: many })).toThrow(/at most 100 entries/);
+  });
+
+  it("throws the settings validation error the REST route turns into a 400", () => {
+    expect(() => validateSettingsGroup("trusted-proxies", { ...base, proxy_protocol_ranges: ["nope"] })).toThrow(SettingsValidationError);
   });
 });

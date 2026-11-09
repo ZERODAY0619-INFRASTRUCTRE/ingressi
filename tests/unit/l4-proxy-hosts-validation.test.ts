@@ -12,17 +12,8 @@ const ctx = vi.hoisted(() => ({ db: null as unknown as TestDb }));
 
 vi.mock('../../src/lib/db', async () => {
   const { createTestDb } = await import('../helpers/db');
-  const schemaModule = await import('../../src/lib/db/schema');
   ctx.db = createTestDb();
-  return {
-    default: ctx.db,
-    schema: schemaModule,
-    nowIso: () => new Date().toISOString(),
-    toIso: (value: string | Date | null | undefined): string | null => {
-      if (!value) return null;
-      return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-    },
-  };
+  return (await import('../helpers/db-module')).mockDbModule(() => ctx.db);
 });
 
 vi.mock('../../src/lib/caddy', () => ({
@@ -35,6 +26,7 @@ vi.mock('../../src/lib/audit', () => ({
 
 import {
   createL4ProxyHost,
+  updateL4ProxyHost,
   type L4ProxyHostInput,
 } from '../../src/lib/models/l4-proxy-hosts';
 import * as schema from '../../src/lib/db/schema';
@@ -122,6 +114,85 @@ describe('L4 proxy host create validation', () => {
       upstreams: ['10.0.0.1:5432'],
     };
     await expect(createL4ProxyHost(input, 1)).rejects.toThrow('Port must be between 1 and 65535');
+  });
+
+  // -----------------------------------------------------------------------
+  // Reserved ports (issue #295): 80/443 belong to the HTTP app, 2019 to the
+  // admin API. A second L4 listener on the same port binds successfully
+  // (SO_REUSEPORT) but silently splits connections ~50/50.
+  // -----------------------------------------------------------------------
+
+  it('rejects reserved port 80', async () => {
+    const input: L4ProxyHostInput = {
+      name: 'Test',
+      protocol: 'tcp',
+      listenAddress: ':80',
+      upstreams: ['10.0.0.1:8080'],
+    };
+    await expect(createL4ProxyHost(input, 1)).rejects.toThrow('Port 80 is reserved');
+  });
+
+  it('rejects reserved port 443', async () => {
+    const input: L4ProxyHostInput = {
+      name: 'Test',
+      protocol: 'tcp',
+      listenAddress: ':443',
+      upstreams: ['10.0.0.1:443'],
+    };
+    await expect(createL4ProxyHost(input, 1)).rejects.toThrow('Port 443 is reserved');
+  });
+
+  it('rejects reserved port 443 in HOST:PORT form', async () => {
+    const input: L4ProxyHostInput = {
+      name: 'Test',
+      protocol: 'tcp',
+      listenAddress: '0.0.0.0:443',
+      upstreams: ['10.0.0.1:443'],
+    };
+    await expect(createL4ProxyHost(input, 1)).rejects.toThrow('Port 443 is reserved');
+  });
+
+  it('rejects reserved port 2019 (admin API)', async () => {
+    const input: L4ProxyHostInput = {
+      name: 'Test',
+      protocol: 'tcp',
+      listenAddress: ':2019',
+      upstreams: ['10.0.0.1:2019'],
+    };
+    await expect(createL4ProxyHost(input, 1)).rejects.toThrow('Port 2019 is reserved');
+  });
+
+  it('rejects reserved port for UDP protocol too', async () => {
+    const input: L4ProxyHostInput = {
+      name: 'Test',
+      protocol: 'udp',
+      listenAddress: ':443',
+      upstreams: ['10.0.0.1:53'],
+    };
+    await expect(createL4ProxyHost(input, 1)).rejects.toThrow('Port 443 is reserved');
+  });
+
+  it('rejects reserved port on update', async () => {
+    const created = await createL4ProxyHost({
+      name: 'Test',
+      protocol: 'tcp',
+      listenAddress: ':8443',
+      upstreams: ['10.0.0.1:443'],
+    }, 1);
+    await expect(
+      updateL4ProxyHost(created.id, { listenAddress: ':443' }, 1)
+    ).rejects.toThrow('Port 443 is reserved');
+  });
+
+  it('accepts a port adjacent to the reserved range', async () => {
+    const input: L4ProxyHostInput = {
+      name: 'Test',
+      protocol: 'tcp',
+      listenAddress: ':8443',
+      upstreams: ['10.0.0.1:443'],
+    };
+    const result = await createL4ProxyHost(input, 1);
+    expect(result.listenAddress).toBe(':8443');
   });
 
   it('rejects empty upstreams', async () => {

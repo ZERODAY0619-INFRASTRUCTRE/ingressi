@@ -7,6 +7,7 @@ vi.mock('@/src/lib/api-auth', () => {
     constructor(msg: string, status: number) { super(msg); this.status = status; this.name = 'ApiAuthError'; }
   };
   return {
+    requireApiPermission: vi.fn((request: unknown) => import('@/tests/helpers/permission-mocks').then((m) => m.viaRequireApiAdmin(request))),
     requireApiAdmin: vi.fn().mockResolvedValue({ userId: 1, role: 'admin', authMethod: 'bearer' }),
     apiErrorResponse: vi.fn((error: unknown) => {
       const { NextResponse: NR } = require('next/server');
@@ -58,6 +59,57 @@ describe('GET /api/v1/openapi.json', () => {
     expect(paths).toContain('/api/v1/caddy/apply');
   });
 
+  it('documents sync key pins on instances and the endpoints that manage them', async () => {
+    const response = await GET(makeRequest());
+    const data = await response.json();
+    const { paths, components } = data;
+
+    expect(paths['/api/v1/instances/{id}/sync-key-pin'].delete.operationId).toBe('resetInstanceSyncKeyPin');
+    expect(paths['/api/v1/instances/{id}/sync-key-pin'].delete.description).toContain('HTTP 405');
+    expect(paths['/api/v1/instances/{id}/sync-key-pin'].put.operationId).toBe('pinInstanceSyncKey');
+    expect(paths['/api/v1/instances/{id}/sync-key-pin'].put.requestBody.content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/SyncKeyPinInput' });
+    expect(paths['/api/v1/instances/sync-key-pins'].get.responses['200'].content['application/json'].schema)
+      .toEqual({ type: 'array', items: { $ref: '#/components/schemas/SyncKeyPinListing' } });
+    expect(paths['/api/v1/instances/sync-key-pins'].put.operationId).toBe('pinSyncKey');
+    for (const method of ['put', 'delete']) {
+      expect(paths['/api/v1/instances/sync-key-pins'][method].parameters).toEqual([
+        { $ref: '#/components/parameters/SyncKeyPinUrl' },
+      ]);
+    }
+    expect(components.parameters.SyncKeyPinUrl).toMatchObject({ name: 'url', in: 'query', required: true });
+    expect(paths['/api/v1/instances/{id}'].put.operationId).toBe('updateInstance');
+    expect(paths['/api/v1/instances/{id}'].put.requestBody.content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/InstanceUpdate' });
+    expect(components.schemas.InstanceUpdate.required).toBeUndefined();
+    expect(paths['/api/v1/instances/sync-key'].get.responses['200'].content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/InstanceSyncKey' });
+
+    expect(components.schemas.Instance.properties.syncKeyPin.oneOf).toEqual([
+      { $ref: '#/components/schemas/SyncKeyPin' },
+      { type: 'null' },
+    ]);
+    expect(components.schemas.Instance.required).toContain('syncKeyPin');
+    expect(components.schemas.SyncKeyPin.required).toEqual(['keyId', 'publicKey', 'pinnedAt', 'source']);
+    // Any source is kept as stored; these are the ones this release writes or reports.
+    expect(components.schemas.SyncKeyPin.properties.source.enum).toBeUndefined();
+    expect(components.schemas.SyncKeyPin.properties.source.examples).toEqual(['first-use', 'rotation', 'manual', 'unreadable']);
+    expect(components.schemas.SyncKeyPinInput.required).toEqual(['publicKey']);
+
+    // Every reference of the instance endpoints and their schemas resolves.
+    const instanceDocs = {
+      paths: Object.entries(paths).filter(([path]) => path.startsWith('/api/v1/instances')),
+      schemas: ['Instance', 'InstanceUpdate', 'SyncKeyPin', 'SyncKeyPinInput', 'SyncKeyPinListing', 'InstanceSyncKey']
+        .map((name) => components.schemas[name]),
+    };
+    const refs = JSON.stringify(instanceDocs).match(/"\$ref":"#\/components\/[^"]+"/g) ?? [];
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of new Set(refs)) {
+      const path = JSON.parse(`{${ref}}`).$ref.slice('#/'.length).split('/');
+      expect(path.reduce((node: any, key: string) => node?.[key], data), ref).toBeDefined();
+    }
+  });
+
   it('has Cache-Control header', async () => {
     const response = await GET(makeRequest());
     expect(response.headers.get('Cache-Control')).toBe('private, max-age=3600');
@@ -99,5 +151,28 @@ describe('GET /api/v1/openapi.json', () => {
     expect(getSettingsSchemas).toContainEqual({ $ref: '#/components/schemas/CloudflareStatus' });
     expect(getSettingsSchemas).not.toContainEqual({ $ref: '#/components/schemas/CloudflareSettings' });
     expect(putSettingsSchemas).toContainEqual({ $ref: '#/components/schemas/CloudflareSettings' });
+  });
+
+  it('documents the sign-in username administrators set when creating and updating users', async () => {
+    const response = await GET(makeRequest());
+    const data = await response.json();
+    const users = data.paths['/api/v1/users'];
+    const user = data.paths['/api/v1/users/{id}'];
+
+    expect(users.post.operationId).toBe('createUser');
+    expect(users.post.requestBody.content['application/json'].schema.required).toEqual(['email', 'password']);
+    for (const operation of [users.post, user.put]) {
+      const username = operation.requestBody.content['application/json'].schema.properties.username;
+      expect(username.type).toBe('string');
+      expect(username.description).toContain('3-255');
+      expect(username.description).toContain('portal name');
+      expect(username.description).toContain('400');
+      const email = operation.requestBody.content['application/json'].schema.properties.email;
+      expect(email.description).toMatch(/400 when another account has it .* or signs in with it as username/);
+    }
+    const stored = data.components.schemas.User.properties.username;
+    expect(stored.type).toEqual(['string', 'null']);
+    expect(stored.description).toContain('own email address');
+    expect(stored.description).not.toMatch(/made from|derived|-2@/);
   });
 });

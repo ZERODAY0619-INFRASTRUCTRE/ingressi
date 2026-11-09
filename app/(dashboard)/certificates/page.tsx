@@ -1,244 +1,159 @@
 import { X509Certificate } from 'node:crypto';
-import db from '@/src/lib/db';
-import { proxyHosts, certificates } from '@/src/lib/db/schema';
-import { isNull, isNotNull } from 'drizzle-orm';
-import { requireAdmin } from '@/src/lib/auth';
+import { requirePermission } from '@/src/lib/auth';
+import { can, scopeTagsFor } from '@/src/lib/permissions';
 import CertificatesClient from './CertificatesClient';
 import { listCaCertificates, type CaCertificate } from '@/src/lib/models/ca-certificates';
 import { listIssuedClientCertificates, type IssuedClientCertificate } from '@/src/lib/models/issued-client-certificates';
-import { listMtlsRoles, type MtlsRole } from '@/src/lib/models/mtls-roles';
-import { isDomainCoveredByCert } from '@/src/lib/cert-domain-match';
-import { countHealthyAcmeHosts } from './certificate-summary';
+import { buildRoleCertIdMap, listMtlsRoles, type MtlsRole } from '@/src/lib/models/mtls-roles';
+import { listProxyHosts, type ProxyHost } from '@/src/lib/models/proxy-hosts';
+import { listCertificates } from '@/src/lib/models/certificates';
+import { getDnsProviderSettings } from '@/src/lib/settings';
+import { getProviderDefinition } from '@/src/lib/dns-providers';
+import { buildDnsProviderChoices } from '@/src/lib/dns-provider-choice';
+import type { ManagedCertificateView } from '@/src/components/certificates/ManagedCertificateSheet';
+import { buildCertificateOverview } from '@/src/lib/certificate-overview';
+import { trustAnchorUsage, type HostRef } from './trust';
 
 export type { CaCertificate };
 export type { IssuedClientCertificate };
 export type { MtlsRole };
 
 export type CaCertificateView = CaCertificate & {
-  issuedCerts: IssuedClientCertificate[];
-};
-
-export type CertExpiryStatus = 'ok' | 'expiring_soon' | 'expired';
-
-export type AcmeHost = {
-  id: number;
-  name: string;
-  domains: string[];
-  sslForced: boolean;
-  enabled: boolean;
-};
-
-export type ImportedCertView = {
-  id: number;
-  name: string;
-  domains: string[];
+  /** Client certificates it issued here, revoked or not. */
+  issued: { active: number; revoked: number };
+  /** End of the CA certificate's validity (ISO 8601), null when its PEM cannot be read. */
   validTo: string | null;
-  validFrom: string | null;
-  issuer: string | null;
-  expiryStatus: CertExpiryStatus | null;
-  usedBy: { id: number; name: string; domains: string[] }[];
+  /** Proxy hosts whose mTLS trusts this CA or certificates it issued. */
+  trustedBy: HostRef[];
 };
 
-export type ManagedCertView = { id: number; name: string; domainNames: string[] };
+/** An issued client certificate without its PEM, which the list does not need. */
+export type IssuedClientCertificateView = Omit<IssuedClientCertificate, 'certificatePem'> & {
+  caName: string | null;
+  /** Names of the mTLS roles the certificate belongs to. */
+  roles: string[];
+};
 
-const PER_PAGE = 25;
+export type MtlsRoleView = MtlsRole & {
+  /** Ids of the active certificates in the role. */
+  certificateIds: number[];
+  /** Proxy hosts whose mTLS requires the role. */
+  requiredBy: HostRef[];
+};
+
+/** What the import/edit drawer needs of an imported certificate. */
+export type ImportedCertView = { id: number; name: string; domains: string[] };
+
+export type CertificatesTab = 'certificates' | 'authorities' | 'client';
+
+export type { ManagedCertificateView };
 
 interface PageProps {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }
 
-function parsePemInfo(pem: string): { validTo: string; validFrom: string; issuer: string; sanDomains: string[] } | null {
+function pemValidTo(pem: string): string | null {
   try {
-    const c = new X509Certificate(pem);
-    const sanDomains =
-      c.subjectAltName
-        ?.split(',')
-        .map(s => s.trim())
-        .filter(s => s.startsWith('DNS:'))
-        .map(s => s.slice(4)) ?? [];
-    const issuerLine = c.issuer ?? '';
-    const issuer = (
-      issuerLine.match(/O=([^\n,]+)/)?.[1] ??
-      issuerLine.match(/CN=([^\n,]+)/)?.[1] ??
-      issuerLine
-    ).trim();
-    return {
-      validTo: new Date(c.validTo).toISOString(),
-      validFrom: new Date(c.validFrom).toISOString(),
-      issuer,
-      sanDomains,
-    };
+    return new Date(new X509Certificate(pem).validTo).toISOString();
   } catch {
     return null;
   }
 }
 
-function getExpiryStatus(validToIso: string): CertExpiryStatus {
-  const diff = new Date(validToIso).getTime() - Date.now();
-  if (diff < 0) return 'expired';
-  if (diff < 30 * 86400 * 1000) return 'expiring_soon';
-  return 'ok';
-}
-
-
 export default async function CertificatesPage({ searchParams }: PageProps) {
-  await requireAdmin();
-  const { page: pageParam } = await searchParams;
-  const page = Math.max(1, parseInt(pageParam ?? "1", 10) || 1);
-  const offset = (page - 1) * PER_PAGE;
-  const [caCerts, issuedClientCerts] = await Promise.all([
-    listCaCertificates(),
-    listIssuedClientCertificates(),
-  ]);
-  const mtlsRoles = await listMtlsRoles().catch(() => []);
+  const { access } = await requirePermission('certificates:read');
+  // A tag scope limits the certificate list to the certificates and ACME hosts
+  // of in-scope proxy hosts; CA/client certificates and mTLS roles serve every
+  // host and stay hidden (see src/lib/access-scope.ts).
+  const scope = scopeTagsFor(access, 'certificates');
+  const hideTrustAnchors = scope !== null;
+  const settingsReadable = can(access, 'settings:read');
+  const { tab } = await searchParams;
 
-  const [allAcmeRows, certRows, usageRows] = await Promise.all([
-    db
-      .select({
-        id: proxyHosts.id,
-        name: proxyHosts.name,
-        domains: proxyHosts.domains,
-        sslForced: proxyHosts.sslForced,
-        enabled: proxyHosts.enabled,
-      })
-      .from(proxyHosts)
-      .where(isNull(proxyHosts.certificateId))
-      .orderBy(proxyHosts.name),
-    db.select().from(certificates),
-    db
-      .select({
-        certId: proxyHosts.certificateId,
-        hostId: proxyHosts.id,
-        hostName: proxyHosts.name,
-        hostDomains: proxyHosts.domains,
-      })
-      .from(proxyHosts)
-      .where(isNotNull(proxyHosts.certificateId)),
+  const [overview, caCerts, issuedClientCerts, roles, roleCertIds, hosts, storedCertificates, dnsSettings] = await Promise.all([
+    buildCertificateOverview(access),
+    hideTrustAnchors ? Promise.resolve([] as CaCertificate[]) : listCaCertificates(),
+    hideTrustAnchors ? Promise.resolve([] as IssuedClientCertificate[]) : listIssuedClientCertificates(),
+    hideTrustAnchors ? Promise.resolve([] as MtlsRole[]) : listMtlsRoles().catch(() => [] as MtlsRole[]),
+    hideTrustAnchors
+      ? Promise.resolve(new Map<number, Set<number>>())
+      : buildRoleCertIdMap().catch(() => new Map<number, Set<number>>()),
+    // CAs and roles serve every host, so "trusted by" looks at every host.
+    hideTrustAnchors ? Promise.resolve([] as ProxyHost[]) : listProxyHosts(null),
+    listCertificates(),
+    getDnsProviderSettings(),
   ]);
 
-  const allAcmeHosts: AcmeHost[] = allAcmeRows.map(r => ({
-    id: r.id,
-    name: r.name,
-    domains: JSON.parse(r.domains) as string[],
-    sslForced: r.sslForced,
-    enabled: r.enabled,
+  // What the sheet needs to change a certificate Caddy obtains: only for rows the overview shows.
+  const shownCertificateIds = new Set(overview.certificates.map((row) => row.certificateId));
+  const managedCertificates: ManagedCertificateView[] = storedCertificates
+    .filter((cert) => cert.type === 'managed' && shownCertificateIds.has(cert.id))
+    .map((cert) => ({
+      id: cert.id,
+      name: cert.name,
+      domains: cert.domainNames,
+      provider: typeof cert.providerOptions?.provider === 'string' ? cert.providerOptions.provider : null,
+    }));
+  const dnsChoices = buildDnsProviderChoices(dnsSettings, (name) => getProviderDefinition(name)?.displayName ?? name);
+
+  const usage = trustAnchorUsage(hosts, issuedClientCerts, roleCertIds);
+  const caNames = new Map(caCerts.map((ca) => [ca.id, ca.name]));
+  const roleNamesByCert = new Map<number, string[]>();
+  for (const role of roles) {
+    for (const certId of roleCertIds.get(role.id) ?? []) {
+      roleNamesByCert.set(certId, [...(roleNamesByCert.get(certId) ?? []), role.name]);
+    }
+  }
+
+  const issuedByCa = new Map<number, { active: number; revoked: number }>();
+  for (const cert of issuedClientCerts) {
+    const counts = issuedByCa.get(cert.caCertificateId) ?? { active: 0, revoked: 0 };
+    if (cert.revokedAt) counts.revoked++;
+    else counts.active++;
+    issuedByCa.set(cert.caCertificateId, counts);
+  }
+
+  const caCertificates: CaCertificateView[] = caCerts.map((ca) => ({
+    ...ca,
+    issued: issuedByCa.get(ca.id) ?? { active: 0, revoked: 0 },
+    validTo: pemValidTo(ca.certificatePem),
+    trustedBy: usage.caTrustedBy.get(ca.id) ?? [],
+  }));
+  const clientCertificates: IssuedClientCertificateView[] = issuedClientCerts.map((cert) => ({
+    id: cert.id,
+    caCertificateId: cert.caCertificateId,
+    commonName: cert.commonName,
+    serialNumber: cert.serialNumber,
+    fingerprintSha256: cert.fingerprintSha256,
+    validFrom: cert.validFrom,
+    validTo: cert.validTo,
+    revokedAt: cert.revokedAt,
+    createdAt: cert.createdAt,
+    updatedAt: cert.updatedAt,
+    caName: caNames.get(cert.caCertificateId) ?? null,
+    roles: roleNamesByCert.get(cert.id) ?? [],
+  }));
+  const mtlsRoles: MtlsRoleView[] = roles.map((role) => ({
+    ...role,
+    certificateIds: [...(roleCertIds.get(role.id) ?? [])],
+    requiredBy: usage.roleRequiredBy.get(role.id) ?? [],
   }));
 
-  const usageMap = new Map<number, { id: number; name: string; domains: string[] }[]>();
-  for (const u of usageRows) {
-    if (u.certId == null) continue;
-    const hosts = usageMap.get(u.certId) ?? [];
-    hosts.push({
-      id: u.hostId,
-      name: u.hostName,
-      domains: JSON.parse(u.hostDomains) as string[],
-    });
-    usageMap.set(u.certId, hosts);
-  }
-
-  // Build a map of cert ID -> its domain list (including wildcard entries)
-  const certDomainMap = new Map<number, string[]>();
-  for (const cert of certRows) {
-    const domainNames = JSON.parse(cert.domainNames) as string[];
-    // For imported certs, also check PEM SANs which may include wildcards
-    if (cert.type === 'imported' && cert.certificatePem) {
-      const pemInfo = parsePemInfo(cert.certificatePem);
-      if (pemInfo?.sanDomains.length) {
-        certDomainMap.set(cert.id, pemInfo.sanDomains);
-        continue;
-      }
-    }
-    certDomainMap.set(cert.id, domainNames);
-  }
-
-  // Filter out ACME hosts whose domains are fully covered by an existing certificate's wildcard,
-  // and attribute them to that certificate's usedBy list instead.
-  const filteredAcmeHosts: AcmeHost[] = [];
-  for (const host of allAcmeHosts) {
-    let coveredByCertId: number | null = null;
-    for (const [certId, certDomains] of certDomainMap) {
-      if (host.domains.every(d => isDomainCoveredByCert(d, certDomains))) {
-        coveredByCertId = certId;
-        break;
-      }
-    }
-    if (coveredByCertId !== null) {
-      // Move this host to the cert's usedBy list
-      const hosts = usageMap.get(coveredByCertId) ?? [];
-      hosts.push({ id: host.id, name: host.name, domains: host.domains });
-      usageMap.set(coveredByCertId, hosts);
-    } else {
-      filteredAcmeHosts.push(host);
-    }
-  }
-
-  // Among ACME auto-managed hosts, collapse subdomain hosts under wildcard hosts.
-  // e.g. if *.domain.de is an ACME host, sub.domain.de should not appear separately.
-  const wildcardAcmeHosts = filteredAcmeHosts.filter(h => h.domains.some(d => d.startsWith('*.')));
-  const wildcardDomainSets = wildcardAcmeHosts.map(h => h.domains);
-  const deduplicatedAcmeHosts: AcmeHost[] = [];
-  for (const host of filteredAcmeHosts) {
-    // Never collapse a host that itself has a wildcard domain
-    if (host.domains.some(d => d.startsWith('*.'))) {
-      deduplicatedAcmeHosts.push(host);
-      continue;
-    }
-    // Check if all of this host's domains are covered by any wildcard ACME host
-    const coveredByWildcard = wildcardDomainSets.some(wcDomains =>
-      host.domains.every(d => isDomainCoveredByCert(d, wcDomains))
-    );
-    if (!coveredByWildcard) {
-      deduplicatedAcmeHosts.push(host);
-    }
-  }
-
-  // Paginate the deduplicated ACME hosts
-  const adjustedAcmeTotal = deduplicatedAcmeHosts.length;
-  const healthyAcmeTotal = countHealthyAcmeHosts(deduplicatedAcmeHosts);
-  const paginatedAcmeHosts = deduplicatedAcmeHosts.slice(offset, offset + PER_PAGE);
-
-  const importedCerts: ImportedCertView[] = [];
-  const managedCerts: ManagedCertView[] = [];
-  const issuedByCa = issuedClientCerts.reduce<Map<number, IssuedClientCertificate[]>>((map, cert) => {
-    const current = map.get(cert.caCertificateId) ?? [];
-    current.push(cert);
-    map.set(cert.caCertificateId, current);
-    return map;
-  }, new Map());
-  const caCertificateViews: CaCertificateView[] = caCerts.map((cert) => ({
-    ...cert,
-    issuedCerts: issuedByCa.get(cert.id) ?? [],
-  }));
-
-  for (const cert of certRows) {
-    const domainNames = JSON.parse(cert.domainNames) as string[];
-    if (cert.type === 'imported') {
-      const pemInfo = cert.certificatePem ? parsePemInfo(cert.certificatePem) : null;
-      importedCerts.push({
-        id: cert.id,
-        name: cert.name,
-        domains: pemInfo?.sanDomains.length ? pemInfo.sanDomains : domainNames,
-        validTo: pemInfo?.validTo ?? null,
-        validFrom: pemInfo?.validFrom ?? null,
-        issuer: pemInfo?.issuer ?? null,
-        expiryStatus: pemInfo?.validTo ? getExpiryStatus(pemInfo.validTo) : null,
-        usedBy: usageMap.get(cert.id) ?? [],
-      });
-    } else {
-      managedCerts.push({ id: cert.id, name: cert.name, domainNames: domainNames });
-    }
-  }
+  const canWrite = can(access, 'certificates:write');
 
   return (
     <CertificatesClient
-      acmeHosts={paginatedAcmeHosts}
-      importedCerts={importedCerts}
-      managedCerts={managedCerts}
-      caCertificates={caCertificateViews}
-      acmePagination={{ total: adjustedAcmeTotal, page, perPage: PER_PAGE }}
-      healthyAcmeTotal={healthyAcmeTotal}
+      overview={overview}
+      caCertificates={caCertificates}
+      clientCertificates={clientCertificates}
       mtlsRoles={mtlsRoles}
-      issuedClientCerts={issuedClientCerts}
+      managedCertificates={managedCertificates}
+      dnsChoices={dnsChoices}
+      showTrustAnchors={!hideTrustAnchors}
+      canWrite={canWrite}
+      canCreateCertificate={canWrite && scope === null}
+      canReadSettings={settingsReadable}
+      initialTab={!hideTrustAnchors && (tab === 'authorities' || tab === 'client') ? tab : 'certificates'}
     />
   );
 }

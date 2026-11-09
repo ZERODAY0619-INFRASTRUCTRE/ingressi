@@ -1,7 +1,7 @@
 services:
   web:
-    container_name: caddy-proxy-manager-web
-    image: ghcr.io/fuomag9/caddy-proxy-manager-web:latest
+    container_name: ingressi-web
+    image: ghcr.io/ingres-si/ingressi-web:latest
     build:
       context: .
       dockerfile: docker/web/Dockerfile
@@ -22,6 +22,9 @@ services:
       # Generate with: openssl rand -base64 32
       # SECURITY: You MUST set this to a unique value in production!
       SESSION_SECRET: ${SESSION_SECRET:?ERROR - SESSION_SECRET is required}
+      # Earlier SESSION_SECRET values (comma-separated), only used to decrypt
+      # stored secrets after a rotation (see .env.example)
+      SESSION_SECRET_PREVIOUS: ${SESSION_SECRET_PREVIOUS:-}
 
       # Caddy API endpoint (internal communication)
       CADDY_API_URL: ${CADDY_API_URL:-http://caddy:2019}
@@ -30,11 +33,19 @@ services:
       BASE_URL: ${BASE_URL:-http://localhost:3000}
 
       # Database configuration
-      DATABASE_PATH: /app/data/caddy-proxy-manager.db
-      DATABASE_URL: file:/app/data/caddy-proxy-manager.db
+      DATABASE_PATH: /app/data/ingressi.db
+      DATABASE_URL: file:/app/data/ingressi.db
 
       # NextAuth configuration
       NEXTAUTH_URL: ${BASE_URL:-http://localhost:3000}
+
+      # Extra external ports for forward-auth protected sites (see .env.example)
+      FORWARD_AUTH_ALLOWED_PORTS: ${FORWARD_AUTH_ALLOWED_PORTS:-}
+
+      # Header carrying the real client IP for per-IP login rate limits, e.g.
+      # behind a CDN; leave unset when Caddy is the outermost proxy and set it
+      # only behind a proxy that always overwrites it (see .env.example)
+      TRUSTED_CLIENT_IP_HEADER: ${TRUSTED_CLIENT_IP_HEADER:-}
 
       # REQUIRED: Admin credentials for login
       # SECURITY: You MUST set these to secure values in production!
@@ -45,6 +56,20 @@ services:
       # Self-registration is disabled unless explicitly enabled
       AUTH_ALLOW_SELF_REGISTRATION: ${AUTH_ALLOW_SELF_REGISTRATION:-false}
       AUTH_ALLOW_OAUTH_REGISTRATION: ${AUTH_ALLOW_OAUTH_REGISTRATION:-false}
+      AUTH_ALLOW_OAUTH_ROLE_FROM_CLAIMS: ${AUTH_ALLOW_OAUTH_ROLE_FROM_CLAIMS:-false}
+
+      # Rate limits (see .env.example). Defaults are spelled out because an
+      # empty value is read as 0, not as the default.
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_WINDOW_MS: ${LOGIN_WINDOW_MS:-300000}
+      LOGIN_BLOCK_MS: ${LOGIN_BLOCK_MS:-900000}
+      AUTH_RATE_LIMIT_ENABLED: ${AUTH_RATE_LIMIT_ENABLED:-true}
+      AUTH_RATE_LIMIT_WINDOW: ${AUTH_RATE_LIMIT_WINDOW:-60}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-5}
+
+      # Certificate checks and storage (empty means the built-in default)
+      CADDY_TLS_ADDRESS: ${CADDY_TLS_ADDRESS:-}
+      CERTS_DIRECTORY: ${CERTS_DIRECTORY:-}
 
       # OAuth2/OIDC Authentication (Optional - works with Authentik, Authelia, Keycloak, etc.)
       OAUTH_ENABLED: ${OAUTH_ENABLED:-false}
@@ -57,15 +82,24 @@ services:
       OAUTH_USERINFO_URL: ${OAUTH_USERINFO_URL:-}
       OAUTH_ALLOW_AUTO_LINKING: ${OAUTH_ALLOW_AUTO_LINKING:-false}
 
-      # ClickHouse analytics database (optional — omit CLICKHOUSE_PASSWORD to disable analytics)
+      # Instance sync (master): time limit in ms for one sync request to a slave
+      INSTANCE_SYNC_TIMEOUT_MS: ${INSTANCE_SYNC_TIMEOUT_MS:-60000}
+
+      # Pull replica: values shown by Fleet -> Pull replicas on the master
+      INSTANCE_SYNC_MODE: ${INSTANCE_SYNC_MODE:-}
+      INSTANCE_MASTER_URL: ${INSTANCE_MASTER_URL:-}
+      INSTANCE_PULL_TOKEN: ${INSTANCE_PULL_TOKEN:-}
+      INSTANCE_PULL_INTERVAL: ${INSTANCE_PULL_INTERVAL:-}
+
+      # ClickHouse analytics database (optional: leave CLICKHOUSE_PASSWORD empty to turn analytics off)
       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-cpm}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ingressi}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
       # Days of analytics data to keep before TTL deletes it (default 30)
       CLICKHOUSE_RETENTION_DAYS: ${CLICKHOUSE_RETENTION_DAYS:-30}
     group_add:
-      # caddy's GID — grants group access to the log FILES (read access.log,
+      # caddy's GID: group access to the log files (read access.log,
       # truncate the group-writable waf-audit.log). The web user never needs
       # to list /logs itself; see the caddy-logs note on the caddy service.
       - "${CADDY_GID:-10000}"
@@ -93,8 +127,8 @@ services:
       start_period: 40s
 
   caddy:
-    container_name: caddy-proxy-manager-caddy
-    image: ghcr.io/fuomag9/caddy-proxy-manager-caddy:latest
+    container_name: ingressi-caddy
+    image: ghcr.io/ingres-si/ingressi-caddy:latest
     build:
       context: .
       dockerfile: docker/caddy/Dockerfile
@@ -117,12 +151,12 @@ services:
       # - "9090:9090"  # Metrics available at http://localhost:9090/metrics (configure in Settings first)
     environment:
       # Primary domain for Caddy configuration
-      PRIMARY_DOMAIN: ${PRIMARY_DOMAIN:-caddyproxymanager.com}
+      PRIMARY_DOMAIN: ${PRIMARY_DOMAIN:-ingressi.localhost}
     volumes:
       - caddy-data:/data
       - caddy-config:/config
       # If you override this named volume with a bind mount, the host dir
-      # MUST be readable+writable by caddy's UID/GID — Caddy's log roller
+      # MUST be readable and writable by caddy's UID/GID: Caddy's log roller
       # (timberjack) lists the directory to gzip and prune old rolled files.
       # A write-only dir (e.g. mode 0733/0773) keeps rotation working but
       # silently disables cleanup and fills the disk. On the host run:
@@ -140,11 +174,11 @@ services:
       retries: 3
       start_period: 10s
 
-  # Docker socket proxy — restricts API surface exposed to l4-port-manager.
+  # Docker socket proxy: limits the Docker API that l4-port-manager can reach.
   # Allows container management and network inspection (needed by docker compose up
   # to inspect caddy-network when recreating the caddy container for L4 port changes).
   docker-socket-proxy:
-    container_name: caddy-proxy-manager-docker-proxy
+    container_name: ingressi-docker-proxy
     image: tecnativa/docker-socket-proxy:latest
     restart: unless-stopped
     environment:
@@ -161,6 +195,13 @@ services:
       BUILD: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    # SELinux hosts (Fedora, RHEL, CoreOS) refuse a confined container the
+    # Docker socket, so every call through the proxy would fail with 503 and
+    # L4 port changes would never apply. Labelling stays on for every other
+    # container; this one is already root-equivalent through the socket, and
+    # the option does nothing on hosts without SELinux.
+    security_opt:
+      - label=disable
     # Security: keep the socket proxy off the shared app network. Only the
     # l4-port-manager sidecar needs to reach its container-create API; exposing
     # it to web/caddy/clickhouse would turn any container compromise into host
@@ -170,12 +211,12 @@ services:
     networks:
       - socket-proxy
 
-  # L4 Port Manager sidecar — automatically recreates the caddy container
+  # L4 port manager sidecar: recreates the caddy container
   # when L4 proxy host ports change.
   # Uses Docker socket proxy instead of direct Docker socket access.
   l4-port-manager:
-    container_name: caddy-proxy-manager-l4-ports
-    image: ghcr.io/fuomag9/caddy-proxy-manager-l4-port-manager:latest
+    container_name: ingressi-l4-ports
+    image: ghcr.io/ingres-si/ingressi-l4-port-manager:latest
     build:
       context: .
       dockerfile: docker/l4-port-manager/Dockerfile
@@ -194,20 +235,20 @@ services:
       docker-socket-proxy:
         condition: service_started
     # Reaches Docker only via the socket proxy (over the isolated socket-proxy
-    # network) and recreates caddy through the mounted compose dir — it does not
-    # need the shared app network.
+    # network) and recreates caddy through the mounted compose dir, so it does
+    # not need the shared app network.
     networks:
       - socket-proxy
 
   clickhouse:
-    container_name: caddy-proxy-manager-clickhouse
+    container_name: ingressi-clickhouse
     image: clickhouse/clickhouse-server:latest-alpine
     profiles: [clickhouse]
     restart: always
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-cpm}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?ERROR - CLICKHOUSE_PASSWORD is required}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ingressi}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse-data:/var/lib/clickhouse
@@ -216,10 +257,17 @@ services:
       # (which sets listen_host to ::/0.0.0.0), leaving ClickHouse bound to loopback
       # only so the web container could no longer reach it.
       - ./docker/clickhouse/config.d/low-disk-write.xml:/etc/clickhouse-server/config.d/low-disk-write.xml:ro
+    # Compose interpolates every service, active profile or not, so the
+    # password check lives here and only fires when ClickHouse really starts.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - '[ -n "$$CLICKHOUSE_PASSWORD" ] || { echo "set CLICKHOUSE_PASSWORD in .env, or remove clickhouse from COMPOSE_PROFILES" >&2; exit 1; }; exec /entrypoint.sh "$$@"'
+      - clickhouse
     networks:
       - caddy-network
     healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --user ${CLICKHOUSE_USER:-cpm} --password ${CLICKHOUSE_PASSWORD:?ERROR - CLICKHOUSE_PASSWORD is required} --query 'SELECT 1'"]
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -230,7 +278,7 @@ services:
         hard: 262144
 
   geoipupdate:
-    container_name: geoipupdate-${HOSTNAME}
+    container_name: ingressi-geoipupdate
     image: ghcr.io/maxmind/geoipupdate
     profiles: [geoipupdate]
     restart: always
@@ -254,6 +302,8 @@ networks:
     driver: bridge
     internal: true
 
+# The volume names predate the rename to Ingressi and stay as they are:
+# renamed volumes would start empty on existing installs.
 volumes:
   caddy-manager-data:
   caddy-data:

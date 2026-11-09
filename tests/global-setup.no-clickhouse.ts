@@ -2,6 +2,7 @@ import { chromium } from '@playwright/test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { composeBuildFlags } from './helpers/e2e-stack';
 
 const COMPOSE_ARGS = [
   'compose',
@@ -48,7 +49,7 @@ async function waitForCaddyHealthy(): Promise<void> {
   const maxWait = 90_000;
   console.log('[global-setup-no-ch] Verifying Caddy is healthy...');
   while (Date.now() - start < maxWait) {
-    const result = spawnSync('docker', ['inspect', '--format={{.State.Health.Status}}', 'caddy-proxy-manager-caddy'], {
+    const result = spawnSync('docker', ['inspect', '--format={{.State.Health.Status}}', 'ingressi-caddy'], {
       encoding: 'utf-8',
       cwd: process.cwd(),
     });
@@ -88,7 +89,7 @@ export default async function globalSetup() {
   console.log('[global-setup-no-ch] Starting Docker Compose test stack (no ClickHouse)...');
   execFileSync('docker', [
     ...COMPOSE_ARGS,
-    'up', '-d', '--build',
+    'up', '-d', ...composeBuildFlags(),
     '--wait', '--wait-timeout', '120',
   ], {
     stdio: 'inherit',

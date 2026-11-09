@@ -1,7 +1,5 @@
 "use client";
 
-import { SystemHeader } from "@/src/components/SystemHeader";
-
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/src/lib/auth-client";
@@ -61,20 +59,15 @@ export default function LinkAccountClient({
   const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
 
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
-      <Card className="eva-auth-compact">
-        <SystemHeader login /><CardHeader className="text-center space-y-1">
-          <CardTitle className="text-2xl font-semibold">Link Your Account</CardTitle>
+    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center space-y-1">
+          <CardTitle className="text-2xl font-bold">Link your account</CardTitle>
           <CardDescription>
-            An account with <strong>{email}</strong> already exists
+            An account with <strong>{email}</strong> already exists. Enter its password to link your <strong>{providerName}</strong> sign-in to it.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground text-center">
-            Would you like to link your <strong>{providerName}</strong> account to your existing
-            account? Enter your password to confirm.
-          </p>
-
           {error && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
@@ -100,10 +93,10 @@ export default function LinkAccountClient({
               {loading ? (
                 <>
                   <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent mr-2" />
-                  Linking Account…
+                  Linking…
                 </>
               ) : (
-                "Link Account"
+                "Link account"
               )}
             </Button>
 
@@ -114,7 +107,7 @@ export default function LinkAccountClient({
               onClick={handleUsePassword}
               disabled={loading}
             >
-              Sign in with Password Instead
+              Sign in with a password
             </Button>
           </form>
         </CardContent>

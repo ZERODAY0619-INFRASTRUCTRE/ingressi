@@ -181,8 +181,8 @@ async function completeCallback(domain: string, callbackUrl: string): Promise<st
   const res = await httpGet(domain, url.pathname + url.search);
   expect(res.status).toBe(302);
   const setCookie = String(res.headers['set-cookie'] ?? '');
-  expect(setCookie).toContain('_cpm_fa=');
-  const match = setCookie.match(/_cpm_fa=([^;]+)/);
+  expect(setCookie).toContain('_ingressi_fa=');
+  const match = setCookie.match(/_ingressi_fa=([^;]+)/);
   expect(match).toBeTruthy();
   return match![1];
 }
@@ -209,7 +209,7 @@ test.describe.serial('Forward Auth with OAuth (Dex)', () => {
       domains: [DOMAIN],
       upstreams: ['echo-server:8080'],
       sslForced: false,
-      cpmForwardAuth: { enabled: true },
+      ingressiForwardAuth: { enabled: true },
     });
     expect(res.status()).toBe(201);
     const host = await res.json();
@@ -262,7 +262,7 @@ test.describe.serial('Forward Auth with OAuth (Dex)', () => {
   });
 
   test('forged session cookie gets redirected', async () => {
-    const res = await httpGet(DOMAIN, '/', { Cookie: '_cpm_fa=forged-token' });
+    const res = await httpGet(DOMAIN, '/', { Cookie: '_ingressi_fa=forged-token' });
     expect(res.status).toBe(302);
     expect(String(res.headers['location'])).toContain('/portal');
   });
@@ -276,11 +276,11 @@ test.describe.serial('Forward Auth with OAuth (Dex)', () => {
       const result = await oauthPortalLogin(p, DOMAIN, ALICE);
       expect(result.error).toBeNull();
       expect(result.redirectTo).toBeTruthy();
-      expect(result.redirectTo).toContain('/.cpm-auth/callback');
+      expect(result.redirectTo).toContain('/.ingressi-auth/callback');
 
       // Complete callback and verify upstream access
       const sessionCookie = await completeCallback(DOMAIN, result.redirectTo!);
-      const upstreamRes = await httpGet(DOMAIN, '/', { Cookie: `_cpm_fa=${sessionCookie}` });
+      const upstreamRes = await httpGet(DOMAIN, '/', { Cookie: `_ingressi_fa=${sessionCookie}` });
       expect(upstreamRes.status).toBe(200);
       expect(upstreamRes.body).toContain(ECHO_BODY);
     } finally {
@@ -331,7 +331,7 @@ test.describe.serial('Forward Auth with OAuth (Dex)', () => {
       expect(result.redirectTo).toBeTruthy();
 
       const sessionCookie = await completeCallback(DOMAIN, result.redirectTo!);
-      const upstreamRes = await httpGet(DOMAIN, '/', { Cookie: `_cpm_fa=${sessionCookie}` });
+      const upstreamRes = await httpGet(DOMAIN, '/', { Cookie: `_ingressi_fa=${sessionCookie}` });
       expect(upstreamRes.status).toBe(200);
       expect(upstreamRes.body).toContain(ECHO_BODY);
     } finally {
@@ -378,6 +378,28 @@ test.describe.serial('Forward Auth with OAuth (Dex)', () => {
     expect(res.status()).toBe(200);
   });
 
+  test('a dashboard password session is not reused: the admin signs in at the portal', async ({ page }) => {
+    // The admin's storage state is a password sign-in. Only a session an identity
+    // provider created signs a visitor in to the app without asking again.
+    let sessionLoginCalls = 0;
+    await page.route('**/api/forward-auth/session-login', async (route) => {
+      sessionLoginCalls += 1;
+      await route.continue();
+    });
+    await page.goto(`${BASE_URL}/portal?rd=http://${DOMAIN}/`);
+    await expect(page.getByLabel('Username')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByLabel('Password')).toBeVisible();
+    expect(sessionLoginCalls).toBe(0);
+
+    // Asked directly, the route refuses the password session.
+    const res = await page.request.post(`${BASE_URL}/api/forward-auth/session-login`, {
+      headers: { origin: BASE_URL, 'content-type': 'application/json' },
+      data: { rid: 'x'.repeat(32) },
+    });
+    expect(res.status()).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Sign in to continue.' });
+  });
+
   test('admin can log in via credential form on portal', async ({ page }) => {
     const ctx = await freshContext(page);
     const p = await ctx.newPage();
@@ -405,11 +427,11 @@ test.describe.serial('Forward Auth with OAuth (Dex)', () => {
       }
 
       expect(capturedRedirect).toBeTruthy();
-      expect(capturedRedirect).toContain('/.cpm-auth/callback');
+      expect(capturedRedirect).toContain('/.ingressi-auth/callback');
 
       // Complete via httpGet
       const sessionCookie = await completeCallback(DOMAIN, capturedRedirect!);
-      const upstreamRes = await httpGet(DOMAIN, '/', { Cookie: `_cpm_fa=${sessionCookie}` });
+      const upstreamRes = await httpGet(DOMAIN, '/', { Cookie: `_ingressi_fa=${sessionCookie}` });
       expect(upstreamRes.status).toBe(200);
       expect(upstreamRes.body).toContain(ECHO_BODY);
     } finally {

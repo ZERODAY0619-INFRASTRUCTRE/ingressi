@@ -1,7 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
 /**
- * Regression tests for the "Traffic by Country" world map.
+ * Regression tests for the countries map (the "Map" view of the analytics
+ * page's countries panel).
  *
  * maplibre-gl v6 moved its tile worker into a separate ES module resolved at
  * runtime from `import.meta.url`, which Turbopack cannot resolve correctly. The
@@ -18,7 +19,10 @@ const MAP_CANVAS = 'canvas.maplibregl-canvas';
 
 async function gotoAnalyticsMap(page: Page) {
   await page.goto('/analytics');
-  await expect(page.getByText('Traffic by Country')).toBeVisible({ timeout: 15_000 });
+  const toggle = page.getByRole('group', { name: 'Show countries as' });
+  await expect(toggle).toBeVisible({ timeout: 15_000 });
+  await toggle.getByRole('button', { name: 'Map' }).click();
+  await expect(toggle.getByRole('button', { name: 'Map' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator(MAP_CANVAS)).toBeVisible({ timeout: 15_000 });
 }
 
@@ -36,9 +40,19 @@ test.describe('Analytics world map', () => {
       .poll(() => mapRequests.map((r) => r.url), { timeout: 15_000 })
       .toContain('/maplibre/maplibre-gl-worker.mjs');
 
-    // The worker is an ES module that imports ./maplibre-gl-shared.mjs relative
-    // to itself — staging only the entry file leaves that import 404ing.
-    expect(mapRequests.map((r) => r.url)).toContain('/maplibre/maplibre-gl-shared.mjs');
+    // The worker is an ES module, and what it imports relative to itself must
+    // be staged beside it or the import 404s: ./maplibre-gl-shared.mjs up to
+    // maplibre-gl 6.12, nothing from 6.13 (the worker is self-contained). The
+    // browser does not report the requests a worker makes to the page, so read
+    // the worker and ask for each import.
+    const worker = await page.request.get('/maplibre/maplibre-gl-worker.mjs');
+    expect(worker.status()).toBe(200);
+    expect(worker.headers()['content-type']).toMatch(/javascript/);
+    const imports = [...(await worker.text()).matchAll(/\b(?:from|import)\s*\(?\s*['"]\.\/([^'"]+)['"]/g)].map((match) => match[1]);
+    for (const name of new Set(imports)) {
+      const response = await page.request.get(`/maplibre/${name}`);
+      expect(response.status(), `/maplibre/${name} is imported by the worker`).toBe(200);
+    }
 
     const failed = mapRequests.filter((r) => r.status >= 400);
     expect(failed, `maplibre assets failed to load: ${JSON.stringify(failed)}`).toEqual([]);
@@ -64,6 +78,8 @@ test.describe('Analytics world map', () => {
     await gotoAnalyticsMap(page);
 
     const canvas = page.locator(MAP_CANVAS);
+    // The countries panel sits below the chart: bring the map into view first.
+    await canvas.scrollIntoViewIfNeeded();
     const box = await canvas.boundingBox();
     expect(box).not.toBeNull();
     if (!box) return;

@@ -1,8 +1,6 @@
 "use client";
 
-import { SystemHeader } from "@/src/components/SystemHeader";
-
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState, type ReactNode } from "react";
 import { Shield } from "lucide-react";
 import { authClient } from "@/src/lib/auth-client";
 import { Button } from "@/components/ui/button";
@@ -11,19 +9,44 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
+import { useBranding } from "@/ee/white-label/ui/BrandingProvider";
+import { BrandFooter, BrandLogo, hasLogo } from "@/ee/white-label/ui/BrandParts";
 
 interface PortalLoginFormProps {
   rid: string;
   hasRedirect: boolean;
   targetDomain: string;
+  /** Why this sign-in cannot proceed; replaces the login form when set. */
+  errorMessage?: string | null;
   enabledProviders?: Array<{ id: string; name: string }>;
   existingSession?: { userId: string; name: string | null; email: string | null } | null;
+}
+
+/**
+ * The page around every state of the portal. People signing in to a
+ * protected site see this page most, so it carries the white-label logo (or
+ * name), footer text, support contact and "Powered by" note.
+ */
+function PortalShell({ children }: { children: ReactNode }) {
+  const branding = useBranding();
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background px-4 py-8">
+      {hasLogo(branding) ? (
+        <BrandLogo branding={branding} className="max-h-12 w-auto max-w-[220px]" />
+      ) : (
+        <p className="text-lg font-semibold tracking-tight break-words text-center">{branding.loginHeading}</p>
+      )}
+      {children}
+      <BrandFooter branding={branding} className="w-full max-w-sm" />
+    </div>
+  );
 }
 
 export default function PortalLoginForm({
   rid,
   hasRedirect,
   targetDomain,
+  errorMessage = null,
   enabledProviders = [],
   existingSession,
 }: PortalLoginFormProps) {
@@ -88,7 +111,7 @@ export default function PortalLoginForm({
 
       window.location.href = data.redirectTo;
     } catch {
-      setError("An unexpected error occurred. Please try again.");
+      setError("Sign-in failed. Try again.");
       setPending(false);
     }
   };
@@ -106,44 +129,69 @@ export default function PortalLoginForm({
 
   if (!hasRedirect) {
     return (
-      <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
-        <Card className="eva-auth-compact">
-          <SystemHeader login /><CardHeader className="text-center space-y-1">
-            <CardTitle className="text-xl">Authentication Required</CardTitle>
+      <PortalShell>
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center space-y-1">
+            <CardTitle className="text-xl">Authentication required</CardTitle>
             <CardDescription>No redirect destination specified.</CardDescription>
           </CardHeader>
         </Card>
-      </div>
+      </PortalShell>
+    );
+  }
+
+  if (errorMessage) {
+    return (
+      <PortalShell>
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center space-y-1">
+            <div className="flex justify-center mb-2">
+              <Shield className="h-8 w-8 text-muted-foreground" />
+            </div>
+            <CardTitle className="text-xl">Authentication required</CardTitle>
+            {targetDomain && (
+              <CardDescription>
+                Sign in to access <span className="font-medium text-foreground">{targetDomain}</span>
+              </CardDescription>
+            )}
+          </CardHeader>
+          <CardContent>
+            <Alert variant="destructive">
+              <AlertDescription>{errorMessage}</AlertDescription>
+            </Alert>
+          </CardContent>
+        </Card>
+      </PortalShell>
     );
   }
 
   // If we have a session and are auto-redirecting, show a loading state
   if (existingSession && pending && !error) {
     return (
-      <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
-        <Card className="eva-auth-compact">
-          <SystemHeader login /><CardHeader className="text-center space-y-1">
+      <PortalShell>
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center space-y-1">
             <div className="flex justify-center mb-2">
               <Shield className="h-8 w-8 text-muted-foreground" />
             </div>
-            <CardTitle className="text-xl">Authorizing...</CardTitle>
+            <CardTitle className="text-xl">Signing in…</CardTitle>
             <CardDescription>
-              Signing in as {existingSession.name ?? existingSession.email}
+              {existingSession.name ?? existingSession.email}
             </CardDescription>
           </CardHeader>
         </Card>
-      </div>
+      </PortalShell>
     );
   }
 
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-background eva-auth-canvas px-4 py-8">
-      <Card className="eva-auth-compact">
-        <SystemHeader login /><CardHeader className="text-center space-y-1">
+    <PortalShell>
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center space-y-1">
           <div className="flex justify-center mb-2">
             <Shield className="h-8 w-8 text-muted-foreground" />
           </div>
-          <CardTitle className="text-xl">Authentication Required</CardTitle>
+          <CardTitle className="text-xl">Authentication required</CardTitle>
           <CardDescription>
             {targetDomain
               ? <>Sign in to access <span className="font-medium text-foreground">{targetDomain}</span></>
@@ -178,6 +226,9 @@ export default function PortalLoginForm({
                     </Button>
                   );
                 })}
+                <p className="m-0 text-center text-xs text-muted-foreground">
+                  Signing in to the dashboard with your identity provider also signs you in to the apps you're granted.
+                </p>
               </div>
               <div className="relative">
                 <Separator />
@@ -213,11 +264,11 @@ export default function PortalLoginForm({
               />
             </div>
             <Button type="submit" className="w-full" disabled={disabled}>
-              {pending ? "Signing in..." : "Sign in"}
+              {pending ? "Signing in…" : "Sign in"}
             </Button>
           </form>
         </CardContent>
       </Card>
-    </div>
+    </PortalShell>
   );
 }

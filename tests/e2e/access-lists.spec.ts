@@ -1,352 +1,196 @@
 /**
- * E2E tests: Access Lists page (redesigned split layout).
+ * E2E tests: the Access lists pages.
  *
- * Covers: page load, rail navigation, search, sort, create dialog,
- * members tab (add/remove/bulk/regenerate), settings tab (edit/delete with confirmation),
- * used-by tab, keyboard shortcuts, and empty states.
+ * Covers: the list of lists (what each one does, where it is used, search,
+ * pages, create, delete), a list's page (rules in order and Everyone else,
+ * validation, the plain-language summary and its warnings, basic-auth
+ * users, the denied response, where it is used, unsaved changes, delete)
+ * and the global Blocked sources tab (block, edit, unblock, search).
  *
- * Runs as admin (testadmin) — the page requires admin role.
+ * Runs as admin (testadmin).
  */
 import { test, expect, type Page } from '@playwright/test';
 
 const API = 'http://localhost:3000/api/v1/access-lists';
+const HEADERS = { 'Content-Type': 'application/json', Origin: 'http://localhost:3000' };
 
-/** Helper: create an access list via the REST API and return its data. */
-async function apiCreateList(
-  page: Page,
-  name: string,
-  opts?: { description?: string; users?: { username: string; password: string }[] }
-) {
-  const res = await page.request.post(API, {
-    headers: { 'Content-Type': 'application/json', 'Origin': 'http://localhost:3000' },
-    data: {
-      name,
-      description: opts?.description ?? null,
-      users: opts?.users ?? [],
-    },
-  });
+type ListBody = {
+  id: number;
+  name: string;
+  defaultAction: string;
+  denyStatus: number;
+  denyBody: string | null;
+  rules: { id: number; action: string; kind: string; values: string[]; note: string | null; expiresAt: string | null }[];
+  entries: { id: number; username: string }[];
+};
+
+async function apiCreateList(page: Page, name: string, data: Record<string, unknown> = {}): Promise<ListBody> {
+  const res = await page.request.post(API, { headers: HEADERS, data: { name, ...data } });
   expect(res.ok(), `API create list "${name}" failed: ${res.status()}`).toBeTruthy();
-  const body = await res.json();
-  return body as { id: number; name: string; entries: { id: number; username: string }[] };
+  return (await res.json()) as ListBody;
 }
 
-/** Helper: delete an access list via the REST API (silent on 404). */
+async function apiGetList(page: Page, id: number): Promise<ListBody> {
+  const res = await page.request.get(`${API}/${id}`);
+  expect(res.ok()).toBeTruthy();
+  return (await res.json()) as ListBody;
+}
+
 async function apiDeleteList(page: Page, id: number) {
-  if (id < 0) return;
-  await page.request.delete(`${API}/${id}`, {
-    headers: { 'Origin': 'http://localhost:3000' },
-  }).catch(() => undefined);
+  await page.request.delete(`${API}/${id}`, { headers: { Origin: 'http://localhost:3000' } }).catch(() => undefined);
 }
 
-// ---------------------------------------------------------------------------
-// Page load / structure
-// ---------------------------------------------------------------------------
+async function openList(page: Page, list: { id: number; name: string }) {
+  await page.goto(`/access-lists/${list.id}`);
+  await expect(page.getByRole('heading', { name: list.name, exact: true, level: 1 })).toBeVisible({ timeout: 10_000 });
+}
 
-test.describe('Access Lists — page load', () => {
-  test('page loads without redirecting to login', async ({ page }) => {
-    await page.goto('/access-lists');
-    await expect(page).not.toHaveURL(/login/);
-    await expect(page.locator('body')).toBeVisible();
-  });
+function saveBar(page: Page) {
+  return page.getByTestId('access-list-save-bar');
+}
 
-  test('shows the left rail with "Access Lists" heading', async ({ page }) => {
-    await page.goto('/access-lists');
-    await expect(page.getByRole('heading', { name: 'Access Lists' })).toBeVisible();
-    await expect(page.getByText('HTTP basic auth')).toBeVisible();
-  });
+async function saveList(page: Page) {
+  await saveBar(page).getByRole('button', { name: 'Save list' }).click();
+  await expect(saveBar(page).getByText('No unsaved changes')).toBeVisible({ timeout: 10_000 });
+}
 
-  test('shows a "New" button in the rail', async ({ page }) => {
-    await page.goto('/access-lists');
-    await expect(page.getByRole('button', { name: /^new$/i }).first()).toBeVisible();
-  });
-
-  test('shows search input with Cmd+K hint', async ({ page }) => {
-    await page.goto('/access-lists');
-    await expect(page.getByPlaceholder(/search lists or members/i)).toBeVisible();
-  });
-
-  test('shows sort buttons (Recent, Name, Members, Usage)', async ({ page }) => {
-    await page.goto('/access-lists');
-    for (const label of ['Recent', 'Name', 'Members', 'Usage']) {
-      await expect(page.getByRole('button', { name: label })).toBeVisible();
+test.describe('Access lists — list', () => {
+  test('shows the tabs, the columns and what each list does', async ({ page }) => {
+    const list = await apiCreateList(page, `E2E Overview ${Date.now()}`, {
+      defaultAction: 'deny',
+      rules: [{ action: 'allow', kind: 'ip', values: ['203.0.113.0/26'] }],
+      users: [{ username: 'alice', password: 'Alice-Passw0rd!' }],
+    });
+    try {
+      await page.goto('/access-lists');
+      await expect(page).not.toHaveURL(/login/);
+      await expect(page.getByRole('heading', { name: /^Access lists/, level: 1 })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'New access list' })).toBeVisible();
+      const tabs = page.getByRole('navigation', { name: 'Access list sections' });
+      await expect(tabs.getByRole('link', { name: /^Lists/ })).toHaveAttribute('aria-current', 'page');
+      await expect(tabs.getByRole('link', { name: /^Blocked sources/ })).toBeVisible();
+      for (const column of ['Name', 'What it does', 'Used by']) {
+        await expect(page.getByRole('columnheader', { name: column })).toBeVisible();
+      }
+      await page.getByLabel('Search access lists').fill(list.name);
+      const row = page.getByTestId('access-list-row').filter({ hasText: list.name }).first();
+      await expect(row).toContainText('Allows only 203.0.113.0/26 · basic auth for 1 user');
+      await expect(row).toContainText('Not used');
+    } finally {
+      await apiDeleteList(page, list.id);
     }
   });
-});
 
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
+  test('finds lists by name, rule value and host, and pages through them', async ({ page }) => {
+    const stamp = Date.now();
+    const created: ListBody[] = [];
+    try {
+      for (let i = 1; i <= 27; i++) {
+        created.push(await apiCreateList(page, `E2E Page ${stamp} ${String(i).padStart(2, '0')}`));
+      }
+      const special = await apiCreateList(page, `E2E Find ${stamp}`, {
+        rules: [{ action: 'deny', kind: 'ip', values: ['198.51.100.77'] }],
+      });
+      created.push(special);
+      const hostRes = await page.request.post('http://localhost:3000/api/v1/proxy-hosts', {
+        headers: HEADERS,
+        data: { name: 'E2E Find Host', domains: [`find-${stamp}.example.com`], upstreams: ['localhost:9876'], accessListId: special.id },
+      });
+      expect(hostRes.ok()).toBeTruthy();
+      const host = (await hostRes.json()) as { id: number };
+      try {
+        await page.goto('/access-lists');
+        const search = page.getByLabel('Search access lists');
 
-test.describe('Access Lists — empty state', () => {
-  test('shows "Select an access list" when no list is selected', async ({ page }) => {
-    // Delete all lists first to ensure empty state
-    const res = await page.request.get(API);
-    const lists = await res.json() as { id: number }[];
-    for (const l of lists) {
-      await apiDeleteList(page, l.id);
+        await search.fill(`E2E Page ${stamp}`);
+        await expect(page.getByTestId('access-list-row').filter({ visible: true })).toHaveCount(25);
+        const pager = page.getByRole('navigation', { name: 'Pages of access lists' });
+        await expect(pager).toContainText('1–25 of 27 lists');
+        await pager.getByRole('link', { name: 'Next page' }).click();
+        await expect(page).toHaveURL(/page=2/);
+        await expect(page.getByTestId('access-list-row').filter({ visible: true })).toHaveCount(2);
+        await expect(pager).toContainText('26–27 of 27 lists');
+
+        // A new search starts again at the first page.
+        await search.fill('198.51.100.77');
+        await expect(page).not.toHaveURL(/page=2/);
+        await expect(page.getByTestId('access-list-row').filter({ visible: true })).toHaveCount(1);
+        await expect(page.getByTestId('access-list-row').filter({ visible: true })).toContainText(special.name);
+
+        await search.fill(`find-${stamp}.example`);
+        const row = page.getByTestId('access-list-row').filter({ visible: true });
+        await expect(row).toHaveCount(1);
+        await expect(row.getByRole('link', { name: `find-${stamp}.example.com` })).toHaveAttribute('href', `/proxy-hosts/${host.id}`);
+
+        await search.fill(`nothing-${stamp}`);
+        await expect(page.getByText('No access list matches this search')).toBeVisible();
+        await page.getByRole('button', { name: 'Clear search' }).click();
+        await expect(search).toHaveValue('');
+      } finally {
+        await page.request.delete(`http://localhost:3000/api/v1/proxy-hosts/${host.id}`, { headers: { Origin: 'http://localhost:3000' } });
+      }
+    } finally {
+      for (const list of created) await apiDeleteList(page, list.id);
     }
-
-    await page.goto('/access-lists');
-    await expect(page.getByText('Select an access list')).toBeVisible();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Create dialog
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — create dialog', () => {
-  test('clicking New opens the create dialog', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await expect(page.getByRole('dialog').getByText('New access list')).toBeVisible();
   });
 
-  test('create dialog has Name, Description, and Seed members fields', async ({ page }) => {
+  test('deletes a list from its row after confirming', async ({ page }) => {
+    const list = await apiCreateList(page, `E2E Row Delete ${Date.now()}`);
     await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
+    await page.getByLabel('Search access lists').fill(list.name);
+    await page.getByRole('button', { name: `More actions for ${list.name}` }).filter({ visible: true }).click();
+    await page.getByRole('menuitem', { name: 'Delete' }).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByPlaceholder(/internal.*engineering/i)).toBeVisible();
-    await expect(dialog.getByPlaceholder(/what is this list for/i)).toBeVisible();
-    await expect(dialog.getByPlaceholder('username')).toBeVisible();
-    await expect(dialog.getByPlaceholder('password')).toBeVisible();
+    await expect(dialog).toContainText(`Delete ${list.name}?`);
+    await dialog.getByRole('button', { name: 'Delete list' }).click();
+    await expect(page.getByText(`Deleted ${list.name}`)).toBeVisible({ timeout: 10_000 });
+    await expect.poll(async () => (await page.request.get(`${API}/${list.id}`)).status()).toBe(404);
+    await expect(page.getByTestId('access-list-row').filter({ hasText: list.name })).toHaveCount(0);
   });
+});
 
-  test('Create button is disabled when name is empty', async ({ page }) => {
+test.describe('Access lists — create', () => {
+  test('Create list stays disabled without a name', async ({ page }) => {
     await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
+    await page.getByRole('button', { name: 'New access list' }).first().click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('button', { name: /create list/i })).toBeDisabled();
-  });
-
-  test('create list with name only — appears in rail', async ({ page }) => {
-    const listName = `E2E Create ${Date.now()}`;
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    const dialog = page.getByRole('dialog');
-
-    await dialog.getByPlaceholder(/internal.*engineering/i).fill(listName);
-    await dialog.getByRole('button', { name: /create list/i }).click();
-
-    // Dialog closes
-    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
-    // Name appears as heading in detail pane
-    await expect(page.getByRole('heading', { name: listName })).toBeVisible({ timeout: 10_000 });
-
-    // Cleanup
-    const res = await page.request.get(API);
-    const lists = await res.json() as { id: number; name: string }[];
-    const created = lists.find((l) => l.name === listName);
-    if (created) await apiDeleteList(page, created.id);
-  });
-
-  test('create list with description — description shows in detail pane', async ({ page }) => {
-    const listName = `E2E Desc ${Date.now()}`;
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    const dialog = page.getByRole('dialog');
-
-    await dialog.getByPlaceholder(/internal.*engineering/i).fill(listName);
-    await dialog.getByPlaceholder(/what is this list for/i).fill('Test description');
-    await dialog.getByRole('button', { name: /create list/i }).click();
-
-    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('Test description')).toBeVisible({ timeout: 10_000 });
-
-    // Cleanup
-    const res = await page.request.get(API);
-    const lists = await res.json() as { id: number; name: string }[];
-    const created = lists.find((l) => l.name === listName);
-    if (created) await apiDeleteList(page, created.id);
-  });
-
-  test('create list with seed members — members count shows', async ({ page }) => {
-    const listName = `E2E Seed ${Date.now()}`;
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    const dialog = page.getByRole('dialog');
-
-    await dialog.getByPlaceholder(/internal.*engineering/i).fill(listName);
-    await dialog.getByPlaceholder('username').first().fill('seeduser');
-    await dialog.getByPlaceholder('password').first().fill('SeedPassword!123');
-    await dialog.getByRole('button', { name: /create list/i }).click();
-
-    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
-    // Detail header should show "1 member" badge
-    await expect(page.getByText('1 member', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-
-    // Cleanup
-    const res = await page.request.get(API);
-    const lists = await res.json() as { id: number; name: string }[];
-    const created = lists.find((l) => l.name === listName);
-    if (created) await apiDeleteList(page, created.id);
-  });
-
-  test('add another member link adds a second seed row', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    const dialog = page.getByRole('dialog');
-
-    await expect(dialog.getByPlaceholder('username')).toHaveCount(1);
-    await dialog.getByText('+ Add another member').click();
-    await expect(dialog.getByPlaceholder('username')).toHaveCount(2);
-  });
-
-  test('generate password button fills password in seed row', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    const dialog = page.getByRole('dialog');
-
-    const pwInput = dialog.getByPlaceholder('password').first();
-    await expect(pwInput).toHaveValue('');
-
-    await dialog.getByTitle('Generate password').click();
-    const val = await pwInput.inputValue();
-    expect(val.length).toBeGreaterThanOrEqual(16);
-  });
-
-  test('Cancel closes the create dialog', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: /^new$/i }).first().click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).not.toBeVisible();
   });
-});
 
-// ---------------------------------------------------------------------------
-// Rail — selection, search, sort
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — rail interaction', () => {
-  let listA: { id: number; name: string };
-  let listB: { id: number; name: string };
-
-  test.beforeEach(async ({ page }) => {
-    listA = await apiCreateList(page, `E2E Alpha ${Date.now()}`, {
-      description: 'First list',
-      users: [{ username: 'alice', password: 'Pass1234!abc' }],
-    });
-    listB = await apiCreateList(page, `E2E Beta ${Date.now()}`, {
-      description: 'Second list',
-      users: [
-        { username: 'bob', password: 'Pass1234!abc' },
-        { username: 'carol', password: 'Pass1234!abc' },
-      ],
-    });
-  });
-
-  test.afterEach(async ({ page }) => {
-    await apiDeleteList(page, listA.id);
-    await apiDeleteList(page, listB.id);
-  });
-
-  test('clicking a list in the rail selects it and shows detail', async ({ page }) => {
+  test('creates an allowlist and opens its page', async ({ page }) => {
+    const name = `E2E Create ${Date.now()}`;
     await page.goto('/access-lists');
-    await page.getByText(listA.name).first().click();
-    await expect(page.getByRole('heading', { name: listA.name })).toBeVisible({ timeout: 5_000 });
-  });
+    await page.getByRole('button', { name: 'New access list' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByLabel(/^Description/).fill('Created from the dialog');
+    await dialog.getByRole('radio', { name: /Allowlist/ }).check();
+    await dialog.getByRole('button', { name: /create list/i }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
 
-  test('clicking a different list switches the detail pane', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(listA.name).first().click();
-    await expect(page.getByRole('heading', { name: listA.name })).toBeVisible({ timeout: 5_000 });
+    await expect(page).toHaveURL(/\/access-lists\/\d+$/);
+    await expect(page.getByRole('heading', { name, exact: true, level: 1 })).toBeVisible({ timeout: 10_000 });
+    // No rule lets anyone in yet: the page says so.
+    await expect(page.getByTestId('access-list-summary')).toHaveText('Denies everyone');
+    await expect(page.getByText('Every request is denied.')).toBeVisible();
 
-    await page.getByText(listB.name).first().click();
-    await expect(page.getByRole('heading', { name: listB.name })).toBeVisible({ timeout: 5_000 });
-  });
-
-  test('search filters lists in the rail', async ({ page }) => {
-    await page.goto('/access-lists');
-    const search = page.getByPlaceholder(/search lists or members/i);
-    const rail = page.locator('ul');
-    await search.fill('Alpha');
-
-    await expect(rail.getByText(listA.name)).toBeVisible();
-    await expect(rail.getByText(listB.name)).not.toBeVisible({ timeout: 3_000 });
-  });
-
-  test('search by member username filters correctly', async ({ page }) => {
-    await page.goto('/access-lists');
-    const search = page.getByPlaceholder(/search lists or members/i);
-    const rail = page.locator('ul');
-    await search.fill('carol');
-
-    await expect(rail.getByText(listB.name)).toBeVisible();
-    await expect(rail.getByText(listA.name)).not.toBeVisible({ timeout: 3_000 });
-  });
-
-  test('no-match search shows "No lists match" message', async ({ page }) => {
-    await page.goto('/access-lists');
-    const search = page.getByPlaceholder(/search lists or members/i);
-    await search.fill('zzz-nonexistent-zzz');
-
-    await expect(page.getByText(/no lists match/i)).toBeVisible();
-  });
-
-  test('clear search link resets the filter', async ({ page }) => {
-    await page.goto('/access-lists');
-    const search = page.getByPlaceholder(/search lists or members/i);
-    const rail = page.locator('ul');
-    await search.fill('zzz-nonexistent-zzz');
-    await expect(page.getByText(/no lists match/i)).toBeVisible();
-
-    await page.getByText('Clear search').click();
-    await expect(search).toHaveValue('');
-    await expect(rail.getByText(listA.name)).toBeVisible();
-    await expect(rail.getByText(listB.name)).toBeVisible();
-  });
-
-  test('sort by Name reorders lists alphabetically', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: 'Name' }).click();
-
-    const items = page.locator('ul > li');
-    const count = await items.count();
-    const names: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const text = await items.nth(i).textContent();
-      if (text) names.push(text);
-    }
-    const sorted = [...names].sort((a, b) => a.localeCompare(b));
-    expect(names).toEqual(sorted);
-  });
-
-  test('sort by Members reorders by member count (descending)', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByRole('button', { name: 'Members', exact: true }).click();
-
-    // listB has 2 members, listA has 1 — listB should appear before listA
-    const items = page.locator('ul > li');
-    const count = await items.count();
-    const texts: string[] = [];
-    for (let i = 0; i < count; i++) {
-      texts.push((await items.nth(i).textContent()) ?? '');
-    }
-    const indexA = texts.findIndex((t) => t.includes(listA.name));
-    const indexB = texts.findIndex((t) => t.includes(listB.name));
-    expect(indexB).toBeGreaterThanOrEqual(0);
-    expect(indexA).toBeGreaterThanOrEqual(0);
-    expect(indexB).toBeLessThan(indexA);
+    const id = Number(new URL(page.url()).pathname.split('/').pop());
+    const created = await apiGetList(page, id);
+    expect(created).toMatchObject({ name, defaultAction: 'deny' });
+    await apiDeleteList(page, id);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Detail pane — tabs
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — detail pane tabs', () => {
-  let list: { id: number; name: string };
+test.describe('Access lists — rules', () => {
+  let list: ListBody;
 
   test.beforeEach(async ({ page }) => {
-    list = await apiCreateList(page, `E2E Detail ${Date.now()}`, {
-      description: 'Detail pane test',
-      users: [
-        { username: 'detailuser1', password: 'Pass1234!xyz' },
-        { username: 'detailuser2', password: 'Pass5678!xyz' },
+    list = await apiCreateList(page, `E2E Rules ${Date.now()}`, {
+      rules: [
+        { action: 'allow', kind: 'ip', values: ['203.0.113.0/26'], note: 'Office' },
+        { action: 'deny', kind: 'ip', values: ['0.0.0.0/0', '::/0'], note: 'Everything else' },
       ],
     });
   });
@@ -355,463 +199,263 @@ test.describe('Access Lists — detail pane tabs', () => {
     await apiDeleteList(page, list.id);
   });
 
-  test('detail pane shows Members, Used by, and Settings tabs', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-
-    await expect(page.getByRole('tab', { name: /members/i })).toBeVisible();
-    await expect(page.getByRole('tab', { name: /used by/i })).toBeVisible();
-    await expect(page.getByRole('tab', { name: /settings/i })).toBeVisible();
+  test('shows the rules in order, then everyone else', async ({ page }) => {
+    await openList(page, list);
+    const rows = page.getByTestId('access-list-rule');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText('Allow');
+    await expect(rows.nth(0)).toContainText('203.0.113.0/26');
+    await expect(rows.nth(1)).toContainText('Deny');
+    await expect(page.getByTestId('access-list-everyone-else')).toContainText('Allow');
+    await expect(page.getByTestId('access-list-summary')).toHaveText('Allows 203.0.113.0/26, then denies 0.0.0.0/0 and ::/0; allows everyone else');
+    await expect(saveBar(page).getByText('No unsaved changes')).toBeVisible();
+    await expect(saveBar(page).getByRole('button', { name: 'Save list' })).toBeDisabled();
   });
 
-  test('detail header shows badges (members count, hosts count, updated)', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
+  test('adds a country rule, moves it first and saves the order', async ({ page }) => {
+    await openList(page, list);
+    await page.getByRole('button', { name: 'Add rule' }).click();
+    await page.getByLabel('Match by', { exact: true }).click();
+    await page.getByRole('option', { name: 'Country' }).click();
+    await page.getByLabel('Values', { exact: true }).fill('kp, ir');
+    await expect(page.getByText('Iran')).toBeVisible();
+    await page.getByRole('button', { name: /^Done editing/ }).click();
+    await expect(saveBar(page).getByText('Unsaved changes')).toBeVisible();
 
-    await expect(page.getByText('2 members').first()).toBeVisible();
-    await expect(page.getByText(/0 hosts/).first()).toBeVisible();
-    await expect(page.getByText(/updated/).first()).toBeVisible();
+    await page.getByRole('button', { name: /^Move up: Deny countries KP, IR/ }).click();
+    await page.getByRole('button', { name: /^Move up: Deny countries KP, IR/ }).click();
+    await saveList(page);
+
+    const saved = await apiGetList(page, list.id);
+    expect(saved.rules.map((rule) => [rule.action, rule.kind, rule.values.join(',')])).toEqual([
+      ['deny', 'country', 'KP,IR'],
+      ['allow', 'ip', '203.0.113.0/26'],
+      ['deny', 'ip', '0.0.0.0/0,::/0'],
+    ]);
+    // The rules kept their ids.
+    expect(saved.rules[1].id).toBe(list.rules[0].id);
   });
 
-  test('detail header shows "unused" badge when no proxy hosts use the list', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-
-    await expect(page.getByText('unused').first()).toBeVisible();
+  test('explains a value that does not parse and does not save it', async ({ page }) => {
+    await openList(page, list);
+    await page.getByRole('button', { name: 'Add rule' }).click();
+    await page.getByLabel('Values', { exact: true }).fill('10.0.0.300');
+    await expect(page.getByText('"10.0.0.300" is not an IP address or CIDR range')).toBeVisible();
+    await saveBar(page).getByRole('button', { name: 'Save list' }).click();
+    await expect(page.getByText(/Rule 3: "10.0.0.300" is not an IP address/)).toBeVisible();
+    expect((await apiGetList(page, list.id)).rules).toHaveLength(2);
   });
 
-  test('detail header shows description', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByText('Detail pane test')).toBeVisible({ timeout: 5_000 });
+  test('removes a rule, and Discard brings it back', async ({ page }) => {
+    await openList(page, list);
+    await page.getByRole('button', { name: /^Remove rule: Deny network/ }).click();
+    await expect(page.getByTestId('access-list-rule')).toHaveCount(1);
+    await saveBar(page).getByRole('button', { name: 'Discard' }).click();
+    await expect(page.getByTestId('access-list-rule')).toHaveCount(2);
+    await expect(saveBar(page).getByText('No unsaved changes')).toBeVisible();
+  });
+
+  test('saves everyone else, the deny response and a new name', async ({ page }) => {
+    await openList(page, list);
+    await page.getByLabel('Everyone else').click();
+    await page.getByRole('option', { name: 'Deny' }).click();
+    await expect(page.getByTestId('access-list-summary')).toHaveText('Allows only 203.0.113.0/26');
+    await page.getByLabel('Status', { exact: true }).fill('451');
+    await page.getByLabel('Body', { exact: true }).fill('Not from here');
+    const renamed = `${list.name} renamed`;
+    await page.getByLabel('Name', { exact: true }).fill(renamed);
+    await saveList(page);
+    await expect(page.getByRole('heading', { name: renamed, exact: true, level: 1 })).toBeVisible();
+    const saved = await apiGetList(page, list.id);
+    expect(saved).toMatchObject({ name: renamed, defaultAction: 'deny', denyStatus: 451, denyBody: 'Not from here' });
+  });
+
+  test('warns when allow rules change nothing', async ({ page }) => {
+    await openList(page, list);
+    await page.getByRole('button', { name: /^Remove rule: Deny network/ }).click();
+    await expect(page.getByText('The allow rules change nothing.')).toBeVisible();
+    await expect(page.getByTestId('access-list-summary')).toHaveText('Lets everyone in');
   });
 });
 
-// ---------------------------------------------------------------------------
-// Members tab
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — members tab', () => {
-  let list: { id: number; name: string; entries: { id: number; username: string }[] };
+test.describe('Access lists — basic auth', () => {
+  let list: ListBody;
 
   test.beforeEach(async ({ page }) => {
     list = await apiCreateList(page, `E2E Members ${Date.now()}`, {
-      users: [
-        { username: 'memuser1', password: 'Pass1234!mem1' },
-        { username: 'memuser2', password: 'Pass1234!mem2' },
-      ],
+      users: [{ username: 'alice', password: 'Alice-Passw0rd!' }],
     });
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
   });
 
   test.afterEach(async ({ page }) => {
     await apiDeleteList(page, list.id);
   });
 
-  test('members table shows usernames', async ({ page }) => {
-    await expect(page.getByText('memuser1')).toBeVisible();
-    await expect(page.getByText('memuser2')).toBeVisible();
+  test('adds a user with a generated password and removes another', async ({ page }) => {
+    await openList(page, list);
+    await expect(page.getByTestId('access-list-member')).toHaveCount(1);
+    await page.getByLabel('Username', { exact: true }).fill('bob');
+    await page.getByRole('button', { name: 'Generate' }).click();
+    await expect(page.getByLabel('Password', { exact: true })).not.toHaveValue('');
+    await page.getByRole('button', { name: 'Add user' }).click();
+    await expect(page.getByText('Not saved yet')).toBeVisible();
+    await expect(page.getByText('Copy new passwords before you save: they are not shown again.')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Remove alice' }).click();
+    await expect(page.getByText('Removed when you save')).toBeVisible();
+    await saveList(page);
+
+    const saved = await apiGetList(page, list.id);
+    expect(saved.entries.map((entry) => entry.username)).toEqual(['bob']);
   });
 
-  test('members table shows member count', async ({ page }) => {
-    await expect(page.getByText('2 members').first()).toBeVisible();
-  });
-
-  test('Add member button shows the add form', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-    await expect(page.getByPlaceholder('alice.chen')).toBeVisible();
-    await expect(page.getByPlaceholder(/auto-generate or paste/i)).toBeVisible();
-  });
-
-  test('add a new member — appears in the table', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-    await page.getByPlaceholder('alice.chen').fill('newmember');
-    await page.getByPlaceholder(/auto-generate or paste/i).fill('NewPassword!123');
-
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
-
-    await expect(page.getByText('newmember').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('3 members').first()).toBeVisible({ timeout: 10_000 });
-  });
-
-  test('add member — duplicate username shows error toast', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-    await page.getByPlaceholder('alice.chen').fill('memuser1');
-    await page.getByPlaceholder(/auto-generate or paste/i).fill('SomePass!123');
-
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
-
-    await expect(page.getByText(/username already exists/i)).toBeVisible({ timeout: 5_000 });
-  });
-
-  test('add member — generate password button fills the field', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-
-    const pwInput = page.getByPlaceholder(/auto-generate or paste/i);
-    await expect(pwInput).toHaveValue('');
-
-    await page.getByTitle('Generate strong password').click();
-
-    const val = await pwInput.inputValue();
-    expect(val.length).toBeGreaterThanOrEqual(16);
-  });
-
-  test('add member — password strength indicator appears', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-    const pwInput = page.getByPlaceholder(/auto-generate or paste/i);
-
-    // 'abcdefgh' = 8 chars, all lowercase → score 1 = "Weak"
-    await pwInput.fill('abcdefgh');
-    await expect(page.getByText('Weak')).toBeVisible();
-
-    await pwInput.fill('MyStr0ng!Pass#2026xyz');
-    await expect(page.getByText(/excellent|strong/i).first()).toBeVisible();
-  });
-
-  test('add member — Cancel closes the add form', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-    await expect(page.getByPlaceholder('alice.chen')).toBeVisible();
-
-    // The Cancel button inside the add-member form (not tab area)
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByPlaceholder('alice.chen')).not.toBeVisible();
-  });
-
-  test('Add button is disabled when username or password is empty', async ({ page }) => {
-    await page.getByRole('button', { name: /add member/i }).click();
-    const addBtn = page.getByRole('button', { name: 'Add', exact: true });
-    await expect(addBtn).toBeDisabled();
-
-    await page.getByPlaceholder('alice.chen').fill('testuser');
-    await expect(addBtn).toBeDisabled();
-
-    await page.getByPlaceholder('alice.chen').fill('');
-    await page.getByPlaceholder(/auto-generate or paste/i).fill('SomePass!123');
-    await expect(addBtn).toBeDisabled();
-  });
-
-  test('remove a member via trash icon', async ({ page }) => {
-    const firstRow = page.locator('tbody tr').first();
-    await firstRow.getByTitle('Remove').click();
-
-    await expect(page.getByText('memuser1')).not.toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('1 member').first()).toBeVisible({ timeout: 10_000 });
-  });
-
-  test('regenerate password via refresh icon shows success toast', async ({ page }) => {
-    const firstRow = page.locator('tbody tr').first();
-    await firstRow.getByTitle(/regenerate password/i).click();
-
-    await expect(page.getByText(/new password generated/i)).toBeVisible({ timeout: 10_000 });
-  });
-
-  test('checkbox select all toggles all rows', async ({ page }) => {
-    const headerCheckbox = page.locator('thead input[type="checkbox"]');
-    await headerCheckbox.check();
-
-    await expect(page.getByText('2 selected')).toBeVisible();
-
-    await headerCheckbox.uncheck();
-    await expect(page.getByText('2 selected')).not.toBeVisible();
-  });
-
-  test('bulk remove selected members', async ({ page }) => {
-    const headerCheckbox = page.locator('thead input[type="checkbox"]');
-    await headerCheckbox.check();
-    await expect(page.getByText('2 selected')).toBeVisible();
-
-    await page.getByRole('button', { name: /remove/i }).first().click();
-
-    await expect(page.getByText('0 members').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('No members yet')).toBeVisible();
-  });
-
-  test('cancel bulk selection', async ({ page }) => {
-    const headerCheckbox = page.locator('thead input[type="checkbox"]');
-    await headerCheckbox.check();
-    await expect(page.getByText('2 selected')).toBeVisible();
-
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByText('2 selected')).not.toBeVisible();
-  });
-
-  test('individual row checkbox toggles selection', async ({ page }) => {
-    const firstRow = page.locator('tbody tr').first();
-    const checkbox = firstRow.locator('input[type="checkbox"]');
-    await checkbox.check();
-
-    await expect(page.getByText('1 selected')).toBeVisible();
-
-    await checkbox.uncheck();
-    await expect(page.getByText('1 selected')).not.toBeVisible();
+  test('shows basic auth in the list', async ({ page }) => {
+    await page.goto('/access-lists');
+    await page.getByLabel('Search access lists').fill(list.name);
+    const row = page.getByTestId('access-list-row').filter({ hasText: list.name }).first();
+    await expect(row).toContainText('Basic auth for 1 user');
   });
 });
 
-// ---------------------------------------------------------------------------
-// Members tab — empty state
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — members empty state', () => {
-  let list: { id: number; name: string };
-
-  test.beforeEach(async ({ page }) => {
-    list = await apiCreateList(page, `E2E Empty Members ${Date.now()}`);
-  });
-
-  test.afterEach(async ({ page }) => {
-    await apiDeleteList(page, list.id);
-  });
-
-  test('empty members shows "No members yet" message', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-
-    await expect(page.getByText('No members yet')).toBeVisible();
-    await expect(page.getByText(/add the first credentials/i)).toBeVisible();
-  });
-
-  test('empty members has "Add the first member" button', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-
-    await expect(page.getByRole('button', { name: /add the first member/i })).toBeVisible();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Settings tab
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — settings tab', () => {
-  let list: { id: number; name: string };
-
-  test.beforeEach(async ({ page }) => {
-    list = await apiCreateList(page, `E2E Settings ${Date.now()}`, {
-      description: 'Original description',
-    });
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-    await page.getByRole('tab', { name: /settings/i }).click();
-  });
-
-  test.afterEach(async ({ page }) => {
-    await apiDeleteList(page, list.id);
-  });
-
-  test('settings tab shows name and description fields', async ({ page }) => {
-    await expect(page.locator('#s-name')).toBeVisible();
-    await expect(page.locator('#s-desc')).toBeVisible();
-  });
-
-  test('settings tab shows metadata section (Created, Last updated, List ID)', async ({ page }) => {
-    await expect(page.getByText('Created').first()).toBeVisible();
-    await expect(page.getByText('Last updated')).toBeVisible();
-    await expect(page.getByText('List ID')).toBeVisible();
-  });
-
-  test('settings tab shows danger zone', async ({ page }) => {
-    await expect(page.getByText('Danger zone')).toBeVisible();
-    await expect(page.getByText('Delete this access list')).toBeVisible();
-  });
-
-  test('Save changes button is disabled when no edits are made', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /save changes/i })).toBeDisabled();
-  });
-
-  test('editing name enables Save changes button', async ({ page }) => {
-    await page.locator('#s-name').fill('Modified Name');
-    await expect(page.getByRole('button', { name: /save changes/i })).toBeEnabled();
-  });
-
-  test('Discard button appears when edits are made', async ({ page }) => {
-    await page.locator('#s-name').fill('Modified Name');
-    await expect(page.getByRole('button', { name: /discard/i })).toBeVisible();
-  });
-
-  test('clicking Discard resets fields', async ({ page }) => {
-    const originalName = await page.locator('#s-name').inputValue();
-    await page.locator('#s-name').fill('Modified Name');
-    await page.getByRole('button', { name: /discard/i }).click();
-    await expect(page.locator('#s-name')).toHaveValue(originalName);
-  });
-
-  test('save changes updates the list name', async ({ page }) => {
-    const newName = `E2E Renamed ${Date.now()}`;
-    await page.locator('#s-name').fill(newName);
-    await page.getByRole('button', { name: /save changes/i }).click();
-
-    await expect(page.getByText('Saved')).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByRole('heading', { name: newName })).toBeVisible({ timeout: 5_000 });
-  });
-
-  test('delete button is disabled until confirmation name is typed', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /delete list permanently/i })).toBeDisabled();
-  });
-
-  test('typing wrong confirmation keeps delete disabled', async ({ page }) => {
-    await page.getByPlaceholder(list.name).fill('wrong name');
-    await expect(page.getByRole('button', { name: /delete list permanently/i })).toBeDisabled();
-  });
-
-  test('delete list with correct confirmation removes it', async ({ page }) => {
-    await page.getByPlaceholder(list.name).fill(list.name);
-    await expect(page.getByRole('button', { name: /delete list permanently/i })).toBeEnabled();
-
-    await page.getByRole('button', { name: /delete list permanently/i }).click();
-
-    // List should be removed from the rail
-    await expect(page.locator('ul').getByText(list.name)).not.toBeVisible({ timeout: 10_000 });
-    // Prevent afterEach from trying to delete again
-    list = { ...list, id: -1 };
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Used-by tab
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — used-by tab', () => {
-  let list: { id: number; name: string };
-
-  test.beforeEach(async ({ page }) => {
-    list = await apiCreateList(page, `E2E Usage ${Date.now()}`);
-  });
-
-  test.afterEach(async ({ page }) => {
-    await apiDeleteList(page, list.id);
-  });
-
-  test('used-by tab shows empty state when no proxy hosts use the list', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-
-    await page.getByRole('tab', { name: /used by/i }).click();
-    await expect(page.getByText('Not used by any proxy host')).toBeVisible();
-    await expect(page.getByText(/dormant/i)).toBeVisible();
-  });
-
-  test('used-by tab shows proxy host when one is assigned', async ({ page }) => {
-    const proxyApi = 'http://localhost:3000/api/v1/proxy-hosts';
-
-    const hostRes = await page.request.post(proxyApi, {
-      headers: { 'Content-Type': 'application/json', 'Origin': 'http://localhost:3000' },
-      data: {
-        name: 'E2E Usage Host',
-        domains: ['usage-test.local'],
-        upstreams: ['localhost:9876'],
-        accessListId: list.id,
-      },
+test.describe('Access lists — where it is used', () => {
+  test('lists the hosts using a list, with links', async ({ page }) => {
+    const list = await apiCreateList(page, `E2E Usage ${Date.now()}`);
+    const hostRes = await page.request.post('http://localhost:3000/api/v1/proxy-hosts', {
+      headers: HEADERS,
+      data: { name: 'E2E Usage Host', domains: ['usage-test.example.com'], upstreams: ['localhost:9876'], accessListId: list.id },
     });
     expect(hostRes.ok()).toBeTruthy();
-    const host = await hostRes.json() as { id: number };
-
+    const host = (await hostRes.json()) as { id: number };
     try {
+      await openList(page, list);
+      const usedBy = page.getByRole('region', { name: /^Used by/ });
+      await expect(usedBy.getByRole('link', { name: 'usage-test.example.com' })).toHaveAttribute('href', `/proxy-hosts/${host.id}`);
       await page.goto('/access-lists');
-      await page.getByText(list.name).first().click();
-      await expect(page.getByRole('heading', { name: list.name })).toBeVisible({ timeout: 5_000 });
-
-      await page.getByRole('tab', { name: /used by/i }).click();
-      await expect(page.getByText('usage-test.local')).toBeVisible({ timeout: 10_000 });
-      await expect(page.getByText('active')).toBeVisible();
+      await page.getByLabel('Search access lists').fill(list.name);
+      await expect(page.getByTestId('access-list-row').filter({ hasText: list.name }).first()).toContainText('usage-test.example.com');
     } finally {
-      await page.request.delete(`${proxyApi}/${host.id}`, {
-        headers: { 'Origin': 'http://localhost:3000' },
-      });
+      await page.request.delete(`http://localhost:3000/api/v1/proxy-hosts/${host.id}`, { headers: { Origin: 'http://localhost:3000' } });
+      await apiDeleteList(page, list.id);
+    }
+  });
+
+  test('shows when no host uses a list', async ({ page }) => {
+    const list = await apiCreateList(page, `E2E Unused ${Date.now()}`);
+    try {
+      await openList(page, list);
+      await expect(page.getByText("No host uses this list. Choose it in a proxy host's Access settings.")).toBeVisible();
+    } finally {
+      await apiDeleteList(page, list.id);
     }
   });
 });
 
-// ---------------------------------------------------------------------------
-// Keyboard shortcuts
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — keyboard shortcuts', () => {
-  test('pressing N opens the create dialog', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.locator('body').click();
-    await page.keyboard.press('n');
-
-    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByRole('dialog').getByText('New access list')).toBeVisible();
+test.describe('Access lists — delete', () => {
+  test('deletes a list from its page after confirming', async ({ page }) => {
+    const list = await apiCreateList(page, `E2E Delete ${Date.now()}`);
+    await openList(page, list);
+    await page.getByRole('button', { name: 'Delete list' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText(`Delete ${list.name}?`);
+    await dialog.getByRole('button', { name: 'Delete list' }).click();
+    await expect(page.getByText(`Deleted ${list.name}`)).toBeVisible({ timeout: 10_000 });
+    await expect(page).toHaveURL(/\/access-lists$/);
+    await expect.poll(async () => (await page.request.get(`${API}/${list.id}`)).status()).toBe(404);
   });
 
-  test('pressing N does NOT open dialog when focused on an input', async ({ page }) => {
-    await page.goto('/access-lists');
-    const search = page.getByPlaceholder(/search lists or members/i);
-    await search.focus();
-    await page.keyboard.press('n');
-
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 2_000 });
-  });
-
-  test('Cmd+K focuses the search input', async ({ page }) => {
-    await page.goto('/access-lists');
-    const search = page.getByPlaceholder(/search lists or members/i);
-
-    await page.locator('body').click();
-    await page.keyboard.press('Meta+k');
-
-    await expect(search).toBeFocused({ timeout: 3_000 });
+  test('a missing list is not found', async ({ page }) => {
+    const res = await page.goto('/access-lists/2147483000');
+    expect(res?.status()).toBe(404);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Cross-tab state
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — cross-tab consistency', () => {
-  let list: { id: number; name: string };
-
-  test.beforeEach(async ({ page }) => {
-    list = await apiCreateList(page, `E2E CrossTab ${Date.now()}`, {
-      users: [{ username: 'crossuser', password: 'Pass1234!cross' }],
-    });
-  });
-
+test.describe('Access lists — Blocked sources', () => {
   test.afterEach(async ({ page }) => {
-    await apiDeleteList(page, list.id);
+    const entries = (await (await page.request.get(`${API}/blocked-sources/entries`)).json()) as { id: number }[];
+    for (const entry of entries) {
+      await page.request.delete(`${API}/blocked-sources/entries/${entry.id}`, { headers: { Origin: 'http://localhost:3000' } });
+    }
   });
 
-  test('switching from Members to Settings and back preserves member data', async ({ page }) => {
+  test('blocks a source from the dialog, everywhere', async ({ page }) => {
     await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByText('crossuser')).toBeVisible({ timeout: 5_000 });
+    await page.getByRole('navigation', { name: 'Access list sections' }).getByRole('link', { name: /^Blocked sources/ }).click();
+    await expect(page).toHaveURL(/\/access-lists\?tab=blocked-sources$/);
+    await expect(page.getByText('Denied on every host before anything else', { exact: false })).toBeVisible();
 
-    await page.getByRole('tab', { name: /settings/i }).click();
-    await expect(page.getByText('Danger zone')).toBeVisible();
+    await page.getByRole('button', { name: 'Block a source' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Values', { exact: true }).fill('198.51.100.19');
+    await dialog.getByLabel(/^Reason/).fill('Scanner');
+    await dialog.getByRole('button', { name: '24 hours' }).click();
+    await dialog.getByRole('button', { name: 'Block', exact: true }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole('tab', { name: /members/i }).click();
-    await expect(page.getByText('crossuser')).toBeVisible();
+    const row = page.getByTestId('blocked-source-row').filter({ visible: true }).filter({ hasText: '198.51.100.19' });
+    await expect(row).toContainText('Scanner');
+    const entries = (await (await page.request.get(`${API}/blocked-sources/entries`)).json()) as { action: string; values: string[]; note: string; expiresAt: string | null }[];
+    expect(entries).toEqual([expect.objectContaining({ action: 'deny', values: ['198.51.100.19'], note: 'Scanner' })]);
+    expect(entries[0].expiresAt).not.toBeNull();
   });
 
-  test('switching from Members to Used by shows correct tab content', async ({ page }) => {
-    await page.goto('/access-lists');
-    await page.getByText(list.name).first().click();
-    await expect(page.getByText('crossuser')).toBeVisible({ timeout: 5_000 });
+  test('shows, finds, edits and unblocks a source blocked through the API', async ({ page }) => {
+    for (const [address, reason] of [['203.0.113.140', 'Probed /.env.backup'], ['203.0.113.141', 'Scanner']]) {
+      const res = await page.request.post(`${API}/blocked-sources/entries`, {
+        headers: HEADERS,
+        data: { address, reason, expiresInSeconds: 3600 },
+      });
+      expect(res.status()).toBe(201);
+    }
+    await page.goto('/access-lists?tab=blocked-sources');
+    await expect(page.getByTestId('blocked-source-row').filter({ visible: true })).toHaveCount(2);
 
-    await page.getByRole('tab', { name: /used by/i }).click();
-    await expect(page.getByText('Not used by any proxy host')).toBeVisible();
+    await page.getByLabel('Search blocked sources').fill('env.backup');
+    const row = page.getByTestId('blocked-source-row').filter({ visible: true });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText('203.0.113.140');
+
+    await row.getByRole('button', { name: 'More actions for 203.0.113.140' }).click();
+    await page.getByRole('menuitem', { name: 'Edit reason or expiry' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel(/^Reason/).fill('Probing for secrets');
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
+    await page.getByLabel('Search blocked sources').fill('');
+    await expect(page.getByTestId('blocked-source-row').filter({ visible: true }).filter({ hasText: '203.0.113.140' })).toContainText('Probing for secrets');
+
+    await page.getByRole('button', { name: 'More actions for 203.0.113.141' }).filter({ visible: true }).click();
+    await page.getByRole('menuitem', { name: 'Unblock' }).click();
+    await expect(page.getByText('Unblocked 203.0.113.141')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('blocked-source-row').filter({ visible: true })).toHaveCount(1);
+    const entries = (await (await page.request.get(`${API}/blocked-sources/entries`)).json()) as { values: string[]; note: string }[];
+    expect(entries).toEqual([expect.objectContaining({ values: ['203.0.113.140'], note: 'Probing for secrets' })]);
+  });
+
+  test('changes what a denied request gets', async ({ page }) => {
+    await page.goto('/access-lists?tab=blocked-sources');
+    await page.getByRole('button', { name: 'Change' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Status', { exact: true }).fill('429');
+    await dialog.getByLabel('Body', { exact: true }).fill('Slow down');
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('blocked-sources-response')).toContainText('429 · Slow down');
+    try {
+      const list = (await (await page.request.get(`${API}/blocked-sources`)).json()) as { denyStatus: number; denyBody: string };
+      expect(list).toMatchObject({ denyStatus: 429, denyBody: 'Slow down' });
+    } finally {
+      await page.request.put(`${API}/blocked-sources`, { headers: HEADERS, data: { denyStatus: 403, denyBody: null } });
+    }
   });
 });
 
-// ---------------------------------------------------------------------------
-// Unauthenticated access
-// ---------------------------------------------------------------------------
-
-test.describe('Access Lists — unauthenticated', () => {
+test.describe('Access lists — unauthenticated', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  test('unauthenticated access to /access-lists redirects to /login', async ({ page }) => {
-    await page.goto('/access-lists');
-    await expect(page).toHaveURL(/\/login/);
+  test('unauthenticated access redirects to /login', async ({ page }) => {
+    for (const path of ['/access-lists', '/access-lists/1', '/access-lists?tab=blocked-sources']) {
+      await page.goto(path);
+      await expect(page).toHaveURL(/\/login/);
+    }
   });
 });

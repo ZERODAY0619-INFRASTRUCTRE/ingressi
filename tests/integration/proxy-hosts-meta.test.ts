@@ -83,7 +83,7 @@ describe('proxy-hosts WAF meta', () => {
         load_owasp_crs: true,
         excluded_rule_ids: [942100, 941110],
         waf_mode: 'override',
-        custom_directives: 'SecRuleEngine On',
+        custom_directives: 'SecRule REQUEST_URI "@contains /admin" "id:1001,phase:1,deny"',
       },
     };
     const host = await insertHost({ meta: JSON.stringify(wafMeta) });
@@ -256,10 +256,10 @@ describe('proxy-hosts authentik meta', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CPM forward auth meta round-trip
+// Ingressi forward auth meta round-trip
 // ---------------------------------------------------------------------------
 
-describe('proxy-hosts CPM forward auth meta', () => {
+describe('proxy-hosts Ingressi forward auth meta', () => {
   it('stores and retrieves cpm_forward_auth config with excluded_paths', async () => {
     const meta = {
       cpm_forward_auth: {

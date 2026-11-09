@@ -180,6 +180,19 @@ const BASE_DNS_PROVIDERS: DnsProviderDefinition[] = [
     ],
   },
   {
+    name: "inwx",
+    displayName: "INWX",
+    description: "INWX DNS API",
+    docsUrl: "https://github.com/caddy-dns/inwx",
+    modulePath: "github.com/caddy-dns/inwx",
+    fields: [
+      { key: "username", label: "Username", type: "string", required: true },
+      { key: "password", label: "Password", type: "password", required: true },
+      { key: "shared_secret", label: "2FA Shared Secret", type: "password", required: false },
+      { key: "endpoint_url", label: "Endpoint URL", type: "string", required: false },
+    ],
+  },
+  {
     name: "vultr",
     displayName: "Vultr",
     description: "Vultr DNS API",
@@ -293,6 +306,16 @@ const BASE_DNS_PROVIDERS: DnsProviderDefinition[] = [
     ],
   },
   {
+    name: "bunny",
+    displayName: "Bunny",
+    description: "Bunny DNS API",
+    docsUrl: "https://github.com/caddy-dns/bunny",
+    modulePath: "github.com/caddy-dns/bunny",
+    fields: [
+      { key: "access_key", label: "API Access Key", type: "password", required: true },
+    ],
+  },
+  {
     name: "dynu",
     displayName: "Dynu",
     description: "Dynu DNS API",
@@ -378,6 +401,47 @@ const BASE_DNS_PROVIDERS: DnsProviderDefinition[] = [
       },
     ],
   },
+  {
+    name: "rfc2136",
+    displayName: "RFC2136 (BIND / TSIG)",
+    description: "RFC 2136 Dynamic DNS updates via a TSIG key (BIND9 and compatible servers)",
+    docsUrl: "https://github.com/caddy-dns/rfc2136",
+    modulePath: "github.com/caddy-dns/rfc2136",
+    fields: [
+      {
+        key: "key_name",
+        label: "TSIG Key Name",
+        type: "string",
+        required: true,
+        placeholder: "my-transfer-key",
+        description: "Name of the TSIG key as defined on the DNS server (miND/domain form accepted).",
+      },
+      {
+        key: "key_alg",
+        label: "TSIG Algorithm",
+        type: "string",
+        required: true,
+        placeholder: "hmac-sha256",
+        description: "HMAC algorithm of the TSIG key, e.g. hmac-sha256, hmac-sha512, or hmac-md5.",
+      },
+      {
+        key: "key",
+        label: "TSIG Key Secret",
+        type: "password",
+        required: true,
+        placeholder: "base64 secret",
+        description: "The base64-encoded TSIG shared secret (from the key statement or `tsig-keygen`).",
+      },
+      {
+        key: "server",
+        label: "DNS Server",
+        type: "string",
+        required: true,
+        placeholder: "1.2.3.4:53",
+        description: "Authoritative DNS server address that accepts RFC 2136 dynamic updates (host:port).",
+      },
+    ],
+  },
 ];
 
 /**
@@ -453,7 +517,8 @@ export function redactLegacyCloudflareSettingsForApi(settings: {
 
 /**
  * Encrypt password-type credential fields for storage.
- * Non-password fields and already-encrypted values are left unchanged.
+ * Non-password fields, non-string values and already-encrypted values are
+ * left unchanged.
  */
 export function encryptProviderCredentials(
   providerName: string,
@@ -464,27 +529,65 @@ export function encryptProviderCredentials(
 
   const result = { ...credentials };
   for (const field of def.fields) {
-    if (field.type === "password" && result[field.key] && !isEncryptedSecret(result[field.key])) {
-      result[field.key] = encryptSecret(result[field.key]);
+    const value: unknown = result[field.key];
+    if (field.type === "password" && typeof value === "string" && value && !isEncryptedSecret(value)) {
+      result[field.key] = encryptSecret(value);
     }
   }
   return result;
 }
 
 /**
- * Decrypt password-type credential fields for use in Caddy config.
+ * Encrypt the password fields of a whole dns_provider setting value, in the
+ * multi-provider format ({ providers, default }) and in the single-provider
+ * format of older releases ({ provider, credentials }). Anything else is
+ * returned unchanged.
+ */
+export function encryptDnsProviderSettingCredentials(value: unknown): unknown {
+  if (!isJsonObject(value)) return value;
+  // Credential maps are typed as string maps; encryptProviderCredentials
+  // leaves non-string values alone.
+  if (isJsonObject(value.providers)) {
+    return {
+      ...value,
+      providers: Object.fromEntries(
+        Object.entries(value.providers).map(([provider, credentials]) => [
+          provider,
+          isJsonObject(credentials)
+            ? encryptProviderCredentials(provider, credentials as Record<string, string>)
+            : credentials,
+        ])
+      ),
+    };
+  }
+  if (typeof value.provider === "string" && isJsonObject(value.credentials)) {
+    return {
+      ...value,
+      credentials: encryptProviderCredentials(value.provider, value.credentials as Record<string, string>),
+    };
+  }
+  return value;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Decrypt credentials for use in Caddy config. Every encrypted value is
+ * decrypted, not only the fields this release's registry marks as password:
+ * a master on another release may have encrypted a field this registry does
+ * not know (a renamed field or a newer provider), and a slave stores synced
+ * values encrypted exactly where the master had them encrypted.
  */
 export function decryptProviderCredentials(
   providerName: string,
   credentials: Record<string, string>
 ): Record<string, string> {
-  const def = getProviderDefinition(providerName);
-  if (!def) return credentials;
-
   const result = { ...credentials };
-  for (const field of def.fields) {
-    if (field.type === "password" && result[field.key] && isEncryptedSecret(result[field.key])) {
-      result[field.key] = decryptSecret(result[field.key], `DNS provider "${providerName}" credential "${field.key}"`);
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === "string" && isEncryptedSecret(value)) {
+      result[key] = decryptSecret(value, `DNS provider "${providerName}" credential "${key}"`);
     }
   }
   return result;

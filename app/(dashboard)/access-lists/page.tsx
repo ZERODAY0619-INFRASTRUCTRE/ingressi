@@ -1,20 +1,43 @@
 import AccessListsClient from "./AccessListsClient";
-import { listAccessLists, getAccessListUsageMap } from "@/src/lib/models/access-lists";
-import { requireAdmin } from "@/src/lib/auth";
+import BlockedSourcesClient from "./BlockedSourcesClient";
+import { blockedSourcesPlaceholder } from "@/src/lib/models/access-lists";
+import { loadAccessListOverview } from "@/src/lib/access-list-overview";
+import { getTrustedProxiesSettings } from "@/src/lib/settings";
+import { requirePermission } from "@/src/lib/auth";
+import { can } from "@/src/lib/permissions";
 
-export default async function AccessListsPage() {
-  await requireAdmin();
+export const metadata = { title: "Access lists" };
 
-  const [lists, usageMap] = await Promise.all([
-    listAccessLists(),
-    getAccessListUsageMap(),
-  ]);
+type PageProps = { searchParams?: Promise<Record<string, string | string[] | undefined>> };
 
-  // Serialize usage map to a plain object for client
-  const usage: Record<number, { id: number; name: string; domains: string[]; enabled: boolean }[]> = {};
-  for (const [listId, hosts] of usageMap) {
-    usage[listId] = hosts;
+/** The lists of hosts, or with ?tab=blocked-sources the global Blocked sources list. */
+export default async function AccessListsPage({ searchParams }: PageProps = {}) {
+  const { access } = await requirePermission("access_lists:read");
+  const params = (await searchParams) ?? {};
+  const blockedTab = params.tab === "blocked-sources";
+  const overview = await loadAccessListOverview(access);
+  const canWrite = can(access, "access_lists:write");
+
+  if (blockedTab) {
+    const trustedProxies = await getTrustedProxiesSettings();
+    return (
+      <BlockedSourcesClient
+        list={overview.blockedSources ?? blockedSourcesPlaceholder()}
+        stopped={overview.stats.available ? overview.stats.blockedSources?.stopped ?? null : null}
+        listCount={overview.lists.length}
+        canWrite={canWrite}
+        trustedProxiesConfigured={(trustedProxies?.ranges ?? []).some((range) => range.trim().length > 0)}
+      />
+    );
   }
 
-  return <AccessListsClient lists={lists} usage={usage} />;
+  return (
+    <AccessListsClient
+      lists={overview.lists}
+      usage={overview.usage}
+      stats={overview.stats}
+      blockedCount={overview.blockedSources?.rules.length ?? 0}
+      canWrite={canWrite}
+    />
+  );
 }

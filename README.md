@@ -1,453 +1,91 @@
-# Caddy Proxy Manager
+# Ingressi
 
-Web interface for managing [Caddy Server](https://caddyserver.com/) reverse proxies and certificates.
+Self-hosted reverse proxy built on [Caddy](https://caddyserver.com/): proxy hosts with automatic HTTPS, load balancing, TCP/UDP streams and traffic analytics, configured from a web dashboard and REST API. Optional per host: a web application firewall, access rules, rate limiting and a sign-in portal. Formerly **Caddy Proxy Manager**.
 
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://mit-license.org)
+[![License: MIT + Elastic-2.0 (ee/)](https://img.shields.io/badge/license-MIT%20%2B%20Elastic--2.0%20%28ee%2F%29-green.svg)](#license)
 [![Next.js](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-blue)](https://www.docker.com/)
 
-[Report Bug](https://github.com/fuomag9/caddy-proxy-manager/issues) • [Request Feature](https://github.com/fuomag9/caddy-proxy-manager/issues)
+[Report a bug](https://github.com/ingres-si/ingressi/issues) • [Request a feature](https://github.com/ingres-si/ingressi/issues) • [Discussions](https://github.com/ingres-si/ingressi/discussions) • [Sponsor](https://github.com/sponsors/fuomag9)
 
-<img width="100%" alt="Dashboard" src="site/assets/screenshots/dashboard-main.png" />
+<img width="100%" alt="The Ingressi overview: what needs attention, traffic of the last 24 hours, the busiest hosts and recent changes" src=".github/assets/dashboard.png" />
 
-## Overview
-
-This project provides a web UI for Caddy Server, eliminating the need to manually edit JSON configurations or Caddyfiles. It handles reverse proxies, access lists, and certificate management through a shadcn/ui interface. Built with Next.js 16, React 19, shadcn/ui, Tailwind CSS, Drizzle ORM, and TypeScript. Analytics data (traffic events, WAF events) is stored in ClickHouse for fast aggregation queries, with automatic retention via TTL (30 days by default, configurable).
-
----
-
-## Installation
+## Quick start
 
 ```bash
-git clone https://github.com/fuomag9/caddy-proxy-manager.git
-cd caddy-proxy-manager
+git clone https://github.com/ingres-si/ingressi.git
+cd ingressi
 cp .env.example .env
-# Edit .env with your credentials
+# Fill in SESSION_SECRET, ADMIN_PASSWORD and CLICKHOUSE_PASSWORD
+# (generate the secrets with: openssl rand -base64 32)
 docker compose up -d
 ```
 
-Access at `http://localhost:3000/login`
+`SESSION_SECRET` needs at least 32 characters. `ADMIN_PASSWORD` needs at least 12, with upper- and lowercase letters, a number and a special character. With other values the web container stops at start-up and restarts; `docker compose logs web` says which value to change, and `docker compose up -d --force-recreate web` applies the corrected `.env`.
 
-Data persists in Docker volumes (caddy-manager-data, caddy-data, caddy-config, caddy-logs).
+Sign in at `http://localhost:3000/login` with `ADMIN_USERNAME` (`admin` in `.env.example`) and `ADMIN_PASSWORD`.
 
----
+Data persists in Docker volumes (caddy-manager-data, caddy-data, caddy-config, caddy-logs, geoip-data, clickhouse-data, acme-ca). The environment variables are listed in the [configuration reference](documentation/configuration.md); before going to production, read [Security](documentation/security.md).
+
+## Upgrading from Caddy Proxy Manager
+
+Caddy Proxy Manager is now Ingressi. The old header, cookie and database names keep working; [upgrading-to-ingressi.md](documentation/upgrading-to-ingressi.md) lists every rename and what to change. Before any upgrade, read the [upgrade notes](documentation/upgrade-notes.md) of every version since yours, then run `docker compose pull && docker compose up -d`.
 
 ## Features
 
-- **Proxy Hosts** - Reverse proxies with custom headers, multiple upstreams, load balancing (8 policies), active/passive health checks, retries, and enable/disable toggle
-- **L4 Proxy Hosts** - TCP/UDP stream proxying with TLS SNI matching, proxy protocol (v1/v2), load balancing, health checks, and per-host geo blocking. Automatic Docker Compose port management via sidecar
-- **Location Rules** - Path-based routing to different upstreams per proxy host (e.g. `/api/*` to one backend, `/ws/*` to another)
-- **Redirect & Rewrite** - Per-host redirect rules (301/302/307/308) and path prefix rewriting
-- **Forward Auth Portal** - Built-in identity provider for protecting proxy hosts without an external IdP. Credential and OAuth login portal, user groups with membership management, per-host access control by user or group, and excluded paths that bypass authentication
-- **WAF** - Web Application Firewall powered by Coraza with optional OWASP Core Rule Set (SQLi, XSS, LFI, RCE). Per-host enable/disable, global and per-host rule suppression, custom SecLang directives, and a searchable event log with severity and blocked/detected classification
-- **Analytics** - Live traffic charts, protocol breakdown, country map, top user agents, and blocked request log with configurable time ranges
-- **Geo Blocking** - Block or allow traffic by country, continent, ASN, CIDR range, or exact IP per proxy host. Allow rules override block rules. Fail-closed mode, custom response codes/bodies, and trusted proxy support
-- **Access Lists** - Multi-account HTTP basic auth protection (bcrypt-hashed) assignable per proxy host
-- **Certificates** - Automatic HTTPS for every proxy host via Caddy ACME (Let's Encrypt / ZeroSSL), manual SSL/TLS import with expiry monitoring, and a built-in CA for issuing and revoking internal client certificates (mTLS)
-- **mTLS** - Mutual TLS per proxy host using built-in CA certificates. Issue, track, and revoke client certificates. Fail-closed revocation (all certs revoked = all connections rejected)
-- **mTLS RBAC** - Role-based access control for mTLS client certificates. Define roles, assign certs to roles, and create path-based access rules per proxy host (e.g. `/admin/*` requires the "ops" role)
-- **User Roles** - Three-tier role system (Viewer, User, Admin) controlling dashboard access, API permissions, and feature visibility
-- **User Management** - Admin page for managing users: edit roles, status, profiles; disable or delete accounts; search and filter
-- **Groups** - Organize users into groups for forward auth access control. Assign groups to proxy hosts to grant access to all members at once
-- **Authentik Integration** - Forward-auth SSO per proxy host with configurable header forwarding and protected paths
-- **DNS Controls** - Custom DNS resolvers per host, upstream DNS pinning with IPv4/IPv6/both address family selection
-- **REST API** - Full REST API under `/api/v1/` with Bearer token authentication, covering all resources. Interactive OpenAPI 3.1.0 docs at `/api-docs`
-- **API Tokens** - Create and manage API tokens with optional expiration for programmatic access
-- **Instance Sync** - Master/slave configuration sync for multi-instance deployments. The master pushes proxy hosts, certificates, access lists, and settings to slaves on every change
-- **Default Response** - Replace Caddy's native behavior for unknown hosts or direct-IP requests with a custom status/body/headers, redirect, or connection abort
-- **OAuth / SSO** - OAuth2/OIDC authentication with any compliant provider (Authentik, Keycloak, Auth0, etc.). Account linking from the Profile page
-- **DNS Providers** - Multi-provider DNS-01 challenge support for ACME certificates: Cloudflare, Route 53, DigitalOcean, Duck DNS, Hetzner, Vultr, Porkbun, GoDaddy, Namecheap, OVH, IONOS, Linode, Njalla, netcup, Spaceship, deSEC, Dynu, acme-dns, Infomaniak, and ClouDNS. Credentials encrypted at rest. Per-certificate provider override supported. Configurable DNS propagation delay/timeout per provider (netcup ships with slow-propagation defaults)
-- **Settings** - ACME email, default response, DNS provider configuration, upstream DNS pinning defaults, Authentik outpost, Prometheus metrics, logging format
-- **Audit Log** - Searchable configuration change history with user attribution and pagination
-- **Search & Pagination** - Server-side search and pagination on all data tables
-- **Dark Mode** - Full dark/light theme support with system preference detection
-- **Mobile UI** - Fully responsive interface optimised for iPhone and other narrow viewports
+- **Proxy hosts:** reverse proxies with custom headers, several upstreams, load balancing (8 policies), active and passive health checks, retries, path-based routes, redirects and rewrites
+- **L4 proxy hosts:** TCP/UDP stream proxying with TLS SNI matching, proxy protocol (v1/v2), load balancing, health checks and geo blocking; a sidecar manages the Docker Compose ports
+- **Certificates:** automatic HTTPS through ACME (Let's Encrypt, ZeroSSL), DNS-01 with 22 DNS providers, imported certificates, and an optional built-in CA for client certificates (mTLS) with role-based path rules
+- **Visibility:** traffic analytics in ClickHouse, security events and an audit log of every change
+- **Optional protections, per host** (off until an administrator turns them on): a web application firewall (Coraza with the OWASP Core Rule Set, per-host modes, rule exclusions and custom SecLang rules), access lists (address, country, continent and AS number rules, and basic auth), geo blocking and rate limiting
+- **Users and sign-in:** dashboard accounts and groups, OAuth2/OIDC sign-in to the dashboard, multi-factor authentication and passkeys, and an optional sign-in portal in front of proxied apps, which reuses dashboard sign-ins from your identity provider and passes the user's identity to the app in headers (or Authentik and other forward-auth servers instead)
+- **Instance sync:** a master copies its own configuration to replicas, with secrets sealed to each replica's own key
+- **REST API** under `/api/v1/` with API tokens and an OpenAPI reference at `/api-docs`, and a command palette (Ctrl+K / ⌘K)
+- **Dark mode** and a responsive interface for phones
 
----
+Ingressi also includes alerting, configuration history and rollback, SAML and LDAP sign-in, enforced SSO, SCIM provisioning, custom roles, change approvals, access reviews, compliance reports, audit streaming, scheduled backups, fleet management, high availability, white-label branding, an AI analyst and API monetization. Their code is in `ee/`; [ee/docs/](ee/docs/README.md) describes each one.
 
-## Configuration
+## Documentation
 
-### Environment Variables
+- **Installing and running:** [Configuration reference](documentation/configuration.md), [Security](documentation/security.md), [Upgrade notes](documentation/upgrade-notes.md), [Upgrading from Caddy Proxy Manager](documentation/upgrading-to-ingressi.md), [Setup checklist](documentation/setup-checklist.md), [PostgreSQL](documentation/postgresql.md), [Instance sync](documentation/instance-sync.md), [Fleet management](ee/docs/fleet.md), [High availability](ee/docs/high-availability.md), [Scheduled backups](ee/docs/scheduled-backups.md), [Air-gapped installs](ee/docs/air-gapped.md)
+- **Dashboard:** [Overview](documentation/overview.md), [Needs attention](documentation/needs-attention.md), [Search and the command palette](documentation/command-palette.md), [Settings](documentation/settings.md), [Profile, sessions and API tokens](documentation/profile.md), [Audit log](documentation/audit-log.md), [Charts](documentation/charts.md), [Alerting](ee/docs/alerting.md), [Configuration history](ee/docs/config-history.md), [Change approvals](ee/docs/change-approvals.md), [White-label](ee/docs/white-label.md)
+- **Hosts and certificates:** [Proxy hosts](documentation/proxy-hosts.md), [Proxy host editor](documentation/proxy-host-editor.md), [L4 proxy hosts](documentation/l4-proxy-hosts.md), [Host tags](documentation/host-tags.md), [Certificates](documentation/certificates.md), [Default response](documentation/default-response.md), [Upstream DNS pinning](documentation/upstream-dns-pinning.md), [API monetization](ee/docs/api-monetization.md)
+- **Optional protections:** [Web application firewall](documentation/waf.md), [Security events](documentation/security-events.md), [Access lists](documentation/access-lists.md), [Geo blocking](documentation/geo-blocking.md), [Rate limiting](documentation/rate-limiting.md)
+- **Users and sign-in:** [Forward auth portal](documentation/forward-auth.md), [OAuth and OpenID Connect sign-in](documentation/oauth.md), [Users and groups](documentation/users-and-groups.md), [Sign-in and directories](documentation/sign-in-and-directories.md), [Multi-factor authentication](documentation/mfa.md), [SAML single sign-on](ee/docs/sso-saml.md), [LDAP / Active Directory](ee/docs/ldap.md), [Enforced SSO](ee/docs/sso-enforcement.md), [SCIM provisioning](ee/docs/scim.md), [Custom roles](ee/docs/custom-roles.md), [Access reviews](ee/docs/access-reviews.md)
+- **Analytics:** [Traffic analytics](documentation/analytics.md), [AI analyst](ee/docs/ai-analyst.md), [Analytics questions](ee/docs/analytics-questions.md)
+- **Audit and compliance:** [Audit streaming and export](ee/docs/audit-streaming.md), [Compliance reports](ee/docs/compliance-reports.md)
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `SESSION_SECRET` | Session encryption key (32+ chars) | None | **Yes** |
-| `ADMIN_USERNAME` | Admin login username | `admin` | **Yes** |
-| `ADMIN_PASSWORD` | Admin password (see requirements below) | `admin` (dev only) | **Yes** |
-| `BASE_URL` | Public URL where users access the dashboard.<br/>**Required for OAuth** - must match redirect URI | `http://localhost:3000` | **Yes** (if using OAuth) |
-| `CADDY_API_URL` | Caddy Admin API endpoint | `http://caddy:2019` (prod)<br/>`http://localhost:2019` (dev) | No |
-| `DATABASE_URL` | SQLite database URL | `file:/app/data/caddy-proxy-manager.db` | No |
-| `CERTS_DIRECTORY` | Certificate storage directory | `./data/certs` | No |
-| `LOGIN_MAX_ATTEMPTS` | Max login attempts before rate limit | `5` | No |
-| `LOGIN_WINDOW_MS` | Rate limit window in milliseconds | `300000` (5 min) | No |
-| `LOGIN_BLOCK_MS` | Rate limit block duration in milliseconds | `900000` (15 min) | No |
-| `OAUTH_ENABLED` | Enable OAuth2/OIDC authentication | `false` | No |
-| `OAUTH_PROVIDER_NAME` | Display name for OAuth provider | `OAuth2` | No |
-| `OAUTH_CLIENT_ID` | OAuth2 client ID | None | No |
-| `OAUTH_CLIENT_SECRET` | OAuth2 client secret | None | No |
-| `OAUTH_ISSUER` | OAuth2 OIDC issuer URL | None | No |
-| `OAUTH_AUTHORIZATION_URL` | Optional OAuth authorization endpoint override | Auto-discovered from `OAUTH_ISSUER` | No |
-| `OAUTH_TOKEN_URL` | Optional OAuth token endpoint override | Auto-discovered from `OAUTH_ISSUER` | No |
-| `OAUTH_USERINFO_URL` | Optional OAuth userinfo endpoint override | Auto-discovered from `OAUTH_ISSUER` | No |
-| `OAUTH_ALLOW_AUTO_LINKING` | Allow auto-linking OAuth identities to existing users | `false` | No |
-| `AUTH_TRUST_HOST` | Trust the Host header for URL construction (only behind proxies that rewrite Host) | `false` | No |
-| `AUTH_ALLOW_SELF_REGISTRATION` | Allow public email/password account registration | `false` | No |
-| `AUTH_ALLOW_OAUTH_REGISTRATION` | Allow first-time OAuth/OIDC identities to create user accounts | `false` | No |
-| `AUTH_RATE_LIMIT_ENABLED` | Enable Better Auth rate limiting | `true` | No |
-| `AUTH_RATE_LIMIT_WINDOW` | Rate limit window in seconds | `60` | No |
-| `AUTH_RATE_LIMIT_MAX` | Max requests per window | `5` | No |
-| `INSTANCE_MODE` | Instance role: `standalone`, `master`, or `slave` | `standalone` | No |
-| `INSTANCE_SYNC_TOKEN` | Bearer token slaves use to authenticate sync requests (32+ characters) | None | No (required if `slave`) |
-| `INSTANCE_SLAVES` | JSON array of slave instances for the master to push to (tokens must be 32+ characters) | None | No |
-| `INSTANCE_SYNC_INTERVAL` | Periodic sync interval in seconds (`0` = disabled) | `0` | No |
-| `INSTANCE_SYNC_ALLOW_HTTP` | Allow sync over HTTP (for internal Docker networks) | `false` | No |
-| `CLICKHOUSE_URL` | ClickHouse HTTP endpoint for analytics | `http://clickhouse:8123` | No |
-| `CLICKHOUSE_USER` | ClickHouse username | `cpm` | No |
-| `CLICKHOUSE_PASSWORD` | ClickHouse password (`openssl rand -base64 32`). Required when the `clickhouse` profile is active. | None | No (required if analytics enabled) |
-| `CLICKHOUSE_DB` | ClickHouse database name | `analytics` | No |
+## PostgreSQL and high availability
 
-**Production Requirements:**
-- `SESSION_SECRET`: 32+ characters (`openssl rand -base64 32`)
-- `ADMIN_PASSWORD`: 12+ chars with uppercase, lowercase, numbers, and special characters
-
-Development mode (`NODE_ENV=development`) allows default `admin`/`admin` credentials.
-
----
-
+- **PostgreSQL:** SQLite is the default; a `postgres://` URL in `DATABASE_URL` runs Ingressi on PostgreSQL, and an existing install can be copied over ([postgresql.md](documentation/postgresql.md)).
+- **High availability:** shared certificate storage for Caddy nodes, a dashboard cluster with failover, shared state and PostgreSQL replicas ([high-availability.md](ee/docs/high-availability.md)).
 
 ## Security
 
-- Production enforces strong passwords (12+ chars, mixed case, numbers, special characters)
-- 32+ character session secrets required
-- Login rate limiting: 5 attempts per 60 seconds
-- Audit trail for all configuration changes
-- Supports OAuth2/OIDC for SSO
+Report vulnerabilities through [GitHub private vulnerability reporting](https://github.com/ingres-si/ingressi/security/advisories/new), not in a public issue. [SECURITY.md](SECURITY.md) has the disclosure policy and how to verify release images; [documentation/security.md](documentation/security.md) covers running Ingressi in production.
 
-**Production Setup:**
-```bash
-export SESSION_SECRET=$(openssl rand -base64 32)
-export ADMIN_USERNAME="admin"
-export ADMIN_PASSWORD="YourStr0ng-P@ssw0rd123!"
-docker compose up -d
-```
+## Support the project
 
-**Limitations:**
-- In-memory rate limiting (not suitable for multi-instance deployments)
-
----
-
-## User Roles
-
-CPM has three roles with increasing privileges:
-
-| Capability | Viewer | User | Admin |
-|------------|:------:|:----:|:-----:|
-| Log in to the dashboard | Yes | Yes | Yes |
-| View own profile | Yes | Yes | Yes |
-| Access forward-auth-protected apps (when granted) | Yes | Yes | Yes |
-| Manage proxy hosts, certificates, access lists | No | No | Yes |
-| Manage users, groups, and settings | No | No | Yes |
-| View analytics, audit log, and API docs | No | No | Yes |
-| Create and manage own API tokens | Yes | Yes | Yes |
-| Access role-appropriate REST API endpoints (`/api/v1/`) | Yes | Yes | Yes |
-
-New users default to the **user** role. The initial admin account is created from the `ADMIN_USERNAME` / `ADMIN_PASSWORD` environment variables.
-
-API tokens can only be created from an authenticated dashboard session; an
-existing bearer token cannot mint replacement credentials. Viewer and user
-tokens are restricted to the same user-scoped API capabilities as their owner.
-
-> **Forward Auth access** is separate from role — all roles must be explicitly granted access to each protected host via the forward auth access list.
-
----
-
-## Certificate Management
-
-Caddy automatically obtains Let's Encrypt certificates for all proxy hosts.
-
-**DNS-01 Challenge** (optional): Configure a DNS provider in **Settings → DNS Providers** for wildcard certificates and environments where ports 80/443 are not public. Supported providers: Cloudflare, Route 53, DigitalOcean, Duck DNS, Hetzner, Vultr, Porkbun, GoDaddy, Namecheap, OVH, IONOS, Linode, Njalla, netcup, Spaceship, deSEC, Dynu, acme-dns, Infomaniak, and ClouDNS. Credentials are encrypted at rest with AES-256-GCM. You can override the DNS provider per certificate.
-
-**Custom Certificates** (optional): Import your own certificates via the Certificates page. Private keys are encrypted at rest with AES-256-GCM, migrated from legacy plaintext storage on startup, and treated as write-only by ordinary API responses and browser payloads.
-
----
-
-## Geo Blocking
-
-Geo blocking is configured per proxy host. It requires MaxMind GeoLite2 databases (see [GeoIP Setup](#geoip-setup)).
-
-### Rule types
-
-| Type | Example | Description |
-|------|---------|-------------|
-| Country | `DE` | ISO 3166-1 alpha-2 country code |
-| Continent | `EU` | `AF`, `AN`, `AS`, `EU`, `NA`, `OC`, `SA` |
-| ASN | `24940` | Autonomous System Number |
-| CIDR | `91.98.150.0/24` | IP range in CIDR notation |
-| IP | `91.98.150.103` | Exact IP address |
-
-Rules can be **block** or **allow**. Allow rules take precedence over block rules — you can block an entire continent and then allow specific IPs or ASNs through.
-
-### GeoIP Setup
-
-Geo blocking requires MaxMind GeoLite2 Country and/or ASN databases. Use the bundled `geoipupdate` service:
-
-1. Register for a free MaxMind account at [maxmind.com](https://www.maxmind.com/)
-2. Generate a license key with `GeoLite2-Country` and `GeoLite2-ASN` permissions
-3. Add to your `.env`:
-   ```
-   GEOIPUPDATE_ACCOUNT_ID=your-account-id
-   GEOIPUPDATE_LICENSE_KEY=your-license-key
-   ```
-4. Start with the `geoipupdate` profile:
-   ```bash
-   docker compose --profile geoipupdate up -d
-   ```
-
-The databases are stored in the `geoip-data` Docker volume and shared between the web and Caddy containers.
-
----
-
-## Analytics
-
-Analytics uses a bundled ClickHouse instance for storing and querying traffic events and WAF events. Data is retained for **30 days** by default via ClickHouse's TTL. Change the window with the `CLICKHOUSE_RETENTION_DAYS` environment variable — on the next startup the existing tables' TTL is migrated to the new value and expired data is purged.
-
-### Enabling analytics (recommended)
-
-Analytics is enabled via the `clickhouse` Docker Compose profile. The default `.env.example` has it on:
-
-```env
-COMPOSE_PROFILES=clickhouse
-CLICKHOUSE_PASSWORD=your-clickhouse-password   # openssl rand -base64 32
-```
-
-Then start (or restart) the stack:
-
-```bash
-docker compose up -d
-```
-
-### Disabling analytics
-
-Remove `clickhouse` from `COMPOSE_PROFILES` (or leave the variable empty) and omit `CLICKHOUSE_PASSWORD`:
-
-```env
-COMPOSE_PROFILES=
-```
-
-The web container starts normally without ClickHouse. The Analytics page shows a notice explaining that ClickHouse is not enabled, and no data is collected.
-
-### Combining profiles
-
-To run both analytics and GeoIP updates simultaneously, list both profiles:
-
-```env
-COMPOSE_PROFILES=clickhouse,geoipupdate
-CLICKHOUSE_PASSWORD=…
-GEOIPUPDATE_ACCOUNT_ID=…
-GEOIPUPDATE_LICENSE_KEY=…
-```
-
----
-
-## WAF (Web Application Firewall)
-
-The WAF is powered by [Coraza](https://coraza.io/) and integrates the OWASP Core Rule Set.
-
-Enable globally in **WAF → Settings**, then optionally override per proxy host. Two modes:
-- **Block** — requests matching rules are rejected with 403
-- **Detect** — requests are logged but not blocked
-
-**OWASP CRS** covers SQLi, XSS, LFI, RCE, and more (enabled by default when WAF is on).
-
-**Rule suppression** — suppress noisy rules globally or per host from the event detail drawer or the Suppressed Rules tab.
-
-**Custom directives** — any ModSecurity SecLang syntax is accepted, e.g.:
-```
-SecRule REQUEST_URI "@beginsWith /api/" "id:9001,phase:1,ctl:ruleEngine=Off,nolog"
-```
-
----
-
-## Instance Sync
-
-Run a master instance that pushes configuration to one or more slaves on every change.
-
-```bash
-# Generate once, then configure the same 64-character value on both sides.
-openssl rand -hex 32
-
-# Master
-INSTANCE_MODE=master
-INSTANCE_SLAVES='[{"name":"replica","url":"https://replica.example.com","token":"<64-hex-character-token>"}]'
-
-# Slave
-INSTANCE_MODE=slave
-INSTANCE_SYNC_TOKEN=<64-hex-character-token>
-```
-
-Sync tokens shorter than 32 characters, longer than 512 characters, or padded with whitespace are rejected.
-
-Synced data: proxy hosts, certificates, access lists, and settings. User accounts are **not** synced.
-
-Use HTTPS slave URLs in production. Set `INSTANCE_SYNC_ALLOW_HTTP=true` only for internal Docker networks.
-
-See the [Environment Variables Reference](https://github.com/fuomag9/caddy-proxy-manager/wiki/Environment-Variables-Reference) for all `INSTANCE_*` options.
-
----
-
-## Default Response
-
-Configure **Settings → Default Response** to preserve Caddy's native behavior for unmatched HTTP requests (such as an automatic HTTPS redirect or empty response, depending on the generated server config), or replace it with:
-
-- a custom HTTP status, body, and response headers (including custom HTML);
-- a redirect; or
-- an aborted connection with no HTTP response (the Caddy equivalent of an nginx `444`).
-
-Configured proxy hosts always take precedence over this catch-all. For HTTPS, Caddy can only send the response after TLS succeeds; an unknown hostname or direct-IP request may fail the certificate handshake first.
-
----
-
-## Upstream DNS Pinning
-
-You can enable upstream DNS pinning globally (**Settings → Upstream DNS Pinning**) and override per host (**Proxy Host → Upstream DNS Pinning**).
-
-When enabled, hostname upstreams are resolved during config save/reload and written to Caddy as concrete IP dials. Address family selection supports:
-- `both` (preferred, resolves AAAA then A with IPv6 preference)
-- `ipv6`
-- `ipv4`
-
-### Important HTTPS Limitation
-
-If one reverse proxy handler contains multiple different HTTPS upstream hostnames, HTTPS pinning is skipped for those HTTPS upstreams to avoid TLS SNI mismatch. In that case, hostname dials are kept for those HTTPS upstreams.
-
-HTTP upstreams in the same handler are still eligible for pinning.
-
----
-
-## OAuth Authentication
-
-Supports any OIDC-compliant provider (Authentik, Keycloak, Auth0, etc.). Providers can be configured via environment variables or the **Settings → OAuth Providers** UI.
-
-### Option A: Configure via UI (Recommended)
-
-1. Log in as admin and navigate to **Settings → OAuth Providers**
-2. Click **Add Provider** and fill in the details
-3. Copy the displayed **Callback URL** and add it to your OAuth provider's allowed redirect URIs
-
-### Option B: Configure via Environment Variables
-
-```bash
-# Set your public URL (REQUIRED for OAuth to work)
-BASE_URL=https://caddy-manager.example.com
-
-OAUTH_ENABLED=true
-OAUTH_PROVIDER_NAME="Authentik"  # Display name
-OAUTH_CLIENT_ID=your-client-id
-OAUTH_CLIENT_SECRET=your-client-secret
-OAUTH_ISSUER=https://auth.example.com/application/o/app/
-```
-
-**Redirect URI Configuration:**
-
-The callback URL format is:
-```
-{BASE_URL}/api/auth/callback/{provider-id}
-```
-
-For environment-configured providers, the provider ID is derived from `OAUTH_PROVIDER_NAME` (lowercased, non-alphanumeric replaced with `-`). The exact callback URL is shown in **Settings → OAuth Providers** after the provider is synced.
-
-Examples:
-- `https://caddy-manager.example.com/api/auth/callback/authentik-QXV0aG` (production)
-- `http://localhost:3000/api/auth/callback/authentik-QXV0aG` (development)
-
-The `BASE_URL` environment variable must match exactly where users access your dashboard.
-
-> **Upgrading from < 1.0-RC:** The old callback URL (`/api/auth/callback/oauth2`) no longer works. Update your OAuth provider's redirect URI to the new format shown in **Settings → OAuth Providers**.
-
-OAuth login appears on the login page alongside credentials.
-
-**Account linking:**
-
-Attaching an OAuth identity to an existing CPM user requires **Auto-link accounts** to be enabled for that provider (**Settings → OAuth Providers**, or `OAUTH_ALLOW_AUTO_LINKING=true` for environment-configured providers). The switch marks the provider as trusted to prove that its identity owns the CPM account carrying the same email address, so leave it off for any IdP where users can register an arbitrary email themselves.
-
-With it enabled:
-
-- Signing in through the provider links the identity to the existing user with the matching email.
-- **Profile → OAuth Connections** can link the provider to the signed-in account. The provider's email must match the signed-in user's email.
-
-With it disabled, both paths are refused and the provider redirects to `/api/auth/error?error=account_not_linked`.
-
----
-
-## Forward Auth Portal
-
-CPM includes a built-in forward auth identity provider — no external IdP (Authentik, Authelia, etc.) required.
-
-### How it works
-
-1. Enable **Forward Auth** on a proxy host and choose which users or groups may access it.
-2. Unauthenticated visitors are redirected to the CPM login portal.
-3. After login, CPM issues a session cookie and redirects back to the protected app.
-4. Caddy's `forward_auth` directive validates every subsequent request against CPM.
-
-### Groups
-
-Create groups on the **Groups** page to organise users. When you grant a group access to a proxy host, all current and future members of that group gain access automatically.
-
-### Per-host access control
-
-Each forward-auth-protected host has its own access list of allowed users and/or groups. Access is separate from the user's role — even admins must be explicitly granted access.
-
----
-
-## Roadmap
-
-[Open an issue](https://github.com/fuomag9/caddy-proxy-manager/issues) for feature requests.
-
----
+Ingressi is free, every feature included. It used to have paid editions; the EU's Cyber Resilience Act made selling it as a one-person project not worth it. If Ingressi is useful to you, please consider [sponsoring it on GitHub](https://github.com/sponsors/fuomag9) or on [Ko-fi](https://ko-fi.com/fuomag9).
 
 ## Contributing
 
-Contributions welcome:
+Bugs and feature requests go to [GitHub Issues](https://github.com/ingres-si/ingressi/issues), questions and ideas to [GitHub Discussions](https://github.com/ingres-si/ingressi/discussions). Pull requests are welcome: fork the repository, work on a branch and open a pull request against `develop`.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/name`)
-3. Commit changes (`git commit -m 'Add feature'`)
-4. Push to branch (`git push origin feature/name`)
-5. Open a Pull Request
-
-- Follow the existing code style (TypeScript, Prettier formatting)
-- Add tests for new features when applicable
-- Update documentation for user-facing changes
-- Keep commits focused and write clear commit messages
-
----
-
-## Support
-
-- **Issues:** [GitHub Issues](https://github.com/fuomag9/caddy-proxy-manager/issues) for bugs and feature requests
-- **Discussions:** [GitHub Discussions](https://github.com/fuomag9/caddy-proxy-manager/discussions) for questions and ideas
-
----
+- Follow the existing code style (TypeScript, Prettier).
+- Add tests for new behaviour. `bun run test:all` runs the typecheck, lint, the PostgreSQL schema check, and the unit and integration tests on SQLite and then on PostgreSQL (`TEST_DATABASE_URL`, a disposable server; see `scripts/test-all.sh`). Every test file that uses the database runs on both; `src/lib/db/README.md` explains how.
+- Update the documentation for user-facing changes.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Everything under `ee/` is under the [Elastic License 2.0](ee/LICENSE): you may use, self-host and modify it, but you may not offer it to others as a hosted or managed service. Everything else is under the [MIT License](LICENSE).
 
----
+Next.js only finds pages and API routes under `app/`, so each page or route implemented in `ee/` keeps a file there that only re-exports it. These routing files are MIT and contain no code under the Elastic License 2.0. [ee/README.md](ee/README.md#where-ee-code-lives) lists every `ee/` module and the files that route to it.
+
+Caddy is a trademark of its respective owner. Ingressi is an independent project and is not affiliated with or endorsed by the Caddy project.
 
 ## Acknowledgments
 
-- **[Caddy Server](https://caddyserver.com/)** – The amazing web server that powers this project
-- **[Nginx Proxy Manager](https://github.com/NginxProxyManager/nginx-proxy-manager)** – The original project
-- **[Next.js](https://nextjs.org/)** – React framework for production
-- **[shadcn/ui](https://ui.shadcn.com/)** – Beautifully designed components built on Radix UI and Tailwind CSS
-- **[Drizzle ORM](https://orm.drizzle.team/)** – Lightweight SQL migrations and type-safe queries
-
----
-
-<div align="center">
-
-[⬆ back to top](#caddy-proxy-manager)
-
-</div>
+- [Caddy](https://caddyserver.com/), the web server Ingressi is built on
+- [Nginx Proxy Manager](https://github.com/NginxProxyManager/nginx-proxy-manager), which inspired the project
+- [Next.js](https://nextjs.org/), [shadcn/ui](https://ui.shadcn.com/) and [Drizzle ORM](https://orm.drizzle.team/)

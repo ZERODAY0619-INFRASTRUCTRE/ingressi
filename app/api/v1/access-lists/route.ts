@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireApiAdmin, apiErrorResponse } from "@/src/lib/api-auth";
-import { listAccessLists, createAccessList } from "@/src/lib/models/access-lists";
+import { requireApiPermission, apiErrorResponse } from "@/src/lib/api-auth";
+import { readJsonBody } from "@/src/lib/access-list-http";
+import { listAccessLists, createAccessList, type AccessListInput } from "@/src/lib/models/access-lists";
 
 export async function GET(request: NextRequest) {
   try {
-    await requireApiAdmin(request);
+    await requireApiPermission(request, "access_lists:read");
     const lists = await listAccessLists();
     return NextResponse.json(lists);
   } catch (error) {
@@ -14,9 +15,10 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { userId } = await requireApiAdmin(request);
-    const body = await request.json();
-    const list = await createAccessList(body, userId);
+    const { userId } = await requireApiPermission(request, "access_lists:write");
+    const body = await readJsonBody(request);
+    // The model validates every field.
+    const list = await createAccessList(body as AccessListInput, userId);
     return NextResponse.json(list, { status: 201 });
   } catch (error) {
     return apiErrorResponse(error);

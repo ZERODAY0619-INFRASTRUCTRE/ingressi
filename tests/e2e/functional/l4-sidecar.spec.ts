@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { waitForTcpRoute, tcpSend } from '../../helpers/tcp';
 
 // Container name as defined in docker-compose.yml
-const L4_CONTAINER = 'caddy-proxy-manager-l4-ports';
+const L4_CONTAINER = 'ingressi-l4-ports';
 
 // Port created by l4-proxy-routing.spec.ts — must match that file
 const TCP_PORT = 15432;
@@ -89,7 +89,7 @@ test.describe.serial('L4 Port Manager Sidecar', () => {
     const state = await waitForL4Terminal(page, 90_000);
     expect(
       state,
-      'Expected "applied" but got "failed". Run: docker logs caddy-proxy-manager-l4-ports',
+      'Expected "applied" but got "failed". Run: docker logs ingressi-l4-ports',
     ).toBe('applied');
   });
 
@@ -130,7 +130,7 @@ test.describe.serial('L4 Port Manager Sidecar', () => {
       state,
       'Sidecar returned "failed" after restart. ' +
       'Likely cause: docker-socket-proxy is missing NETWORKS: 1. ' +
-      'Run: docker logs caddy-proxy-manager-l4-ports',
+      'Run: docker logs ingressi-l4-ports',
     ).toBe('applied');
   });
 
@@ -141,5 +141,68 @@ test.describe.serial('L4 Port Manager Sidecar', () => {
     const res = await tcpSend('127.0.0.1', TCP_PORT, 'after-restart-check\n');
     expect(res.connected).toBe(true);
     expect(res.data).toContain('after-restart-check');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Regression (production incident 2026-09-13): a failed `docker compose up`
+  // aborted the sidecar under `set -e` leaving a stale .l4-apply.lock. The old
+  // startup guard skipped the restore whenever it saw a fresh lock, so every
+  // subsequent restart came up WITHOUT the L4 ports bound and LiveKit voice
+  // traffic silently broke. The fix: the sidecar waits out a fresh lock, takes
+  // over a stale one, and always re-applies at startup.
+  // ---------------------------------------------------------------------------
+  test('recovers from a crashed apply (stale lock) on startup — regression 2026-09-13', async ({ page }) => {
+    test.setTimeout(240_000);
+
+    const { status: before } = await fetchL4Status(page);
+    const prevAppliedAt = before?.appliedAt ?? '';
+    await page.waitForTimeout(1_500);
+
+    // Simulate a crashed apply: plant a stale lock (old timestamp AND old
+    // mtime — the script reads the timestamp content) plus a stuck "applying"
+    // status, exactly as the aborted script left them in production. The lock
+    // lives on the shared data volume, writable from the web container at
+    // /app/data (the sidecar sees the same files at /data).
+    const staleTs = Math.floor(Date.now() / 1000) - 3600;
+    // Plant the files as root (-u root): a crashed apply left them owned by the
+    // sidecar user (root) on the shared volume, so the web user (uid 10001)
+    // cannot overwrite l4-ports.status — writing as root mirrors production.
+    execFileSync(
+      'docker',
+      [
+        'exec', '-u', 'root', 'ingressi-web', 'sh', '-c',
+        `echo ${staleTs} > /app/data/.l4-apply.lock && ` +
+        `printf '{"state":"applying","message":"Recreating caddy container with updated ports...","appliedAt":"2020-01-01T00:00:00.000Z"}' > /app/data/l4-ports.status`,
+      ],
+      { stdio: 'inherit', cwd: process.cwd(), env: ENV },
+    );
+
+    // Restart the sidecar. With the old guard it would have skipped the
+    // restore forever ("already in progress, skipping...") and the status
+    // would have stayed stuck on the planted "applying". With the fix it must
+    // take over, re-apply, and reach a fresh terminal state.
+    execFileSync('docker', ['restart', L4_CONTAINER], { stdio: 'inherit', cwd: process.cwd(), env: ENV });
+
+    const state = await waitForL4Terminal(page, 120_000, prevAppliedAt);
+    expect(
+      state,
+      'Sidecar did not recover from the planted stale lock. ' +
+        'Check: docker logs ingressi-l4-ports',
+    ).toBe('applied');
+
+    // The lock must be gone after the recovered apply
+    const lockGone = execFileSync(
+      'docker',
+      ['exec', 'ingressi-web', 'sh', '-c', 'test -f /app/data/.l4-apply.lock && echo present || echo absent'],
+      { cwd: process.cwd(), env: ENV },
+    ).toString().trim();
+    expect(lockGone).toBe('absent');
+  });
+
+  test('L4 traffic works after recovery from crashed apply', async () => {
+    await waitForTcpRoute('127.0.0.1', TCP_PORT, 30_000);
+    const res = await tcpSend('127.0.0.1', TCP_PORT, 'crash-recovery-check\n');
+    expect(res.connected).toBe(true);
+    expect(res.data).toContain('crash-recovery-check');
   });
 });

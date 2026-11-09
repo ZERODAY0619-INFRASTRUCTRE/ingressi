@@ -90,9 +90,9 @@ test("discovery cannot redirect bearer token to a different origin", async () =>
 });
 
 test("real OAuth callbacks sync new and existing accounts and expose the fresh role in session", async () => {
-  const { getAuth, invalidateProviderCache } = await import("../../src/lib/auth-server");
+  const { getAuth, reloadOAuthProviders } = await import("../../src/lib/auth-server");
   config.auth.allowOauthRegistration = true;
-  invalidateProviderCache();
+  await reloadOAuthProviders();
   const auth = getAuth();
   const base = config.baseUrl;
   globalThis.fetch = (async (url: string | URL | Request) => {

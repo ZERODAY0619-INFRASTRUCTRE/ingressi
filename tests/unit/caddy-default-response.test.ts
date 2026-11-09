@@ -5,18 +5,8 @@ const ctx = vi.hoisted(() => ({ db: null as unknown as TestDb }));
 
 vi.mock("../../src/lib/db", async () => {
   const { createTestDb } = await import("../helpers/db");
-  const schemaModule = await import("../../src/lib/db/schema");
   ctx.db = createTestDb();
-  return {
-    default: ctx.db,
-    sqlite: undefined,
-    schema: schemaModule,
-    nowIso: () => new Date().toISOString(),
-    toIso: (value: string | Date | null | undefined): string | null => {
-      if (!value) return null;
-      return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-    },
-  };
+  return (await import('../helpers/db-module')).mockDbModule(() => ctx.db);
 });
 
 vi.mock("../../src/lib/caddy", async (importOriginal) => {
@@ -35,15 +25,15 @@ import {
 } from "../../src/lib/caddy-default-response";
 import * as schema from "../../src/lib/db/schema";
 
-type CpmServer = { listen?: string[]; routes?: Array<Record<string, unknown>> };
+type IngressiServer = { listen?: string[]; routes?: Array<Record<string, unknown>> };
 
-function cpmServer(document: unknown): CpmServer | undefined {
-  return (document as { apps?: { http?: { servers?: { cpm?: CpmServer } } } })
-    .apps?.http?.servers?.cpm;
+function cpmServer(document: unknown): IngressiServer | undefined {
+  return (document as { apps?: { http?: { servers?: { ingressi?: IngressiServer } } } })
+    .apps?.http?.servers?.ingressi;
 }
 
 // TOMORI prepends non-terminal request telemetry before host/default routing.
-function applicationRoutes(server: CpmServer | undefined): Array<Record<string, unknown>> {
+function applicationRoutes(server: IngressiServer | undefined): Array<Record<string, unknown>> {
   const routes = server?.routes ?? [];
   expect(routes[0]).toMatchObject({ handle: [
     { handler: "log_append", key: "request_id" },
@@ -116,6 +106,26 @@ describe("default response validation and route builder", () => {
       handle: [{ handler: "static_response", abort: true }],
       terminal: true,
     });
+  });
+
+  it("escapes host placeholders in body, headers and redirect target", () => {
+    const respond = buildDefaultResponseRoute(normalizeDefaultResponseSettings({
+      mode: "respond",
+      status: 404,
+      body: "{file./etc/hosts} {http.request.host}",
+      headers: { "X-Info": "{env.HOME}" },
+    }));
+    const handler = respond!.handle[0] as { body: string; headers: Record<string, string[]> };
+    expect(handler.body).toBe("\\{file./etc/hosts} {http.request.host}");
+    expect(handler.headers["X-Info"]).toEqual(["\\{env.HOME}"]);
+
+    const redirect = buildDefaultResponseRoute(normalizeDefaultResponseSettings({
+      mode: "redirect",
+      status: 308,
+      redirectUrl: "https://example.com/{system.hostname}{http.request.uri}",
+    }));
+    const redirectHandler = redirect!.handle[0] as { headers: Record<string, string[]> };
+    expect(redirectHandler.headers.Location).toEqual(["https://example.com/\\{system.hostname}{http.request.uri}"]);
   });
 
   it("builds redirects and gives Location precedence over custom headers", () => {
@@ -211,5 +221,22 @@ describe("buildCaddyDocument default response", () => {
     expect(routes.slice(0, -1).every((route) => route.match !== undefined)).toBe(true);
     expectNotFound(routes.at(-1));
     expect(JSON.stringify(routes)).toContain("known.example.test");
+  });
+
+  it("escapes host placeholders in path-block response bodies", async () => {
+    await seedAdminAndHost();
+    await createProxyHost(
+      {
+        name: "Blocked path host",
+        domains: ["blocked.example.test"],
+        upstreams: ["10.0.0.6:8080"],
+        pathBlocks: [{ path: "/private/*", status: 403, body: "no {file./data/secret} {http.request.uri}" }],
+      },
+      1
+    );
+
+    const json = JSON.stringify(await buildCaddyDocument());
+    expect(json).toContain(JSON.stringify("no \\{file./data/secret} {http.request.uri}").slice(1, -1));
+    expect(json).not.toMatch(/[^\\]\{file\.\/data\/secret\}/);
   });
 });

@@ -12,14 +12,8 @@ const ctx = vi.hoisted(() => ({ db: null as unknown as TestDb }));
 
 vi.mock('../../src/lib/db', async () => {
   const { createTestDb } = await import('../helpers/db');
-  const schemaModule = await import('../../src/lib/db/schema');
   ctx.db = createTestDb();
-  return {
-    default: ctx.db,
-    sqlite: undefined,
-    schema: schemaModule,
-    nowIso: () => new Date().toISOString(),
-  };
+  return (await import('../helpers/db-module')).mockDbModule(() => ctx.db);
 });
 
 vi.mock('../../src/lib/caddy', async (importOriginal) => {
@@ -57,6 +51,17 @@ describe('Caddy log writer rotation settings', () => {
     const doc = await buildCaddyDocument();
     const writer = loggingLogs(doc).http_access?.writer;
     expect(writer).toMatchObject(ROLL_FIELDS);
+  });
+
+  it('tls_issuance writes the certificate loggers\' errors to its own small rolled file, leaving Caddy\'s output alone', async () => {
+    const doc = await buildCaddyDocument();
+    const log = (doc as { logging: { logs: Record<string, Record<string, unknown>> } }).logging.logs.tls_issuance;
+    expect(log.writer).toMatchObject({ output: 'file', filename: '/logs/tls-issuance.log', mode: '0640', roll: true, roll_gzip: true, roll_size_mb: 10, roll_keep: 3, roll_keep_days: 30 });
+    expect(log.include).toEqual(['tls.obtain', 'tls.renew', 'tls.issuance.acme']);
+    expect(log.level).toBe('ERROR');
+    expect(log.encoder).toEqual({ format: 'json' });
+    // No "default" log is defined: Caddy keeps printing these loggers itself.
+    expect(Object.keys((doc as { logging: { logs: object } }).logging.logs)).not.toContain('default');
   });
 
   it('does not omit any roll field (would silently fall back to Caddy defaults)', async () => {

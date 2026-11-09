@@ -1,12 +1,47 @@
-import db, { nowIso, toIso } from "../db";
+import { appDb, nowIso, toIso } from "../db";
 import { applyCaddyConfig } from "../caddy";
+import { stripPlaceholders } from "../caddy-placeholders";
+import { CaddyApplyError } from "../caddy-apply-error";
 import { logAuditEvent } from "../audit";
-import { proxyHosts } from "../db/schema";
-import { asc, desc, eq, count, like, or } from "drizzle-orm";
-import { type GeoBlockSettings, getDnsProviderSettings } from "../settings";
+import {
+  forwardAuthAccess,
+  forwardAuthExchanges,
+  forwardAuthRedirectIntents,
+  forwardAuthSessions,
+  mtlsAccessRules,
+  proxyHosts,
+} from "../db/schema";
+import { and, eq, count, inArray, or, type SQL } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
+import { type GeoBlockSettings, type WafSettings, getDnsProviderSettings, getWafSettings } from "../settings";
 import { normalizeProxyHostDomains } from "../proxy-host-domains";
 import { ApiValidationError } from "../api-errors";
-import { bodyLimitRangeMessage, findInvalidBodyLimitDirective, isValidBodyLimit } from "../caddy-waf";
+import { normalizeBypassSources, readBypassSources } from "../sign-in-bypass";
+import { brandName } from "@/ee/white-label/store";
+import { bodyLimitRangeMessage, customDirectivesError, isValidBodyLimit, wafDirectiveSource } from "../caddy-waf";
+import { normalizeTags, parseStoredTags, serializeTags } from "../host-tags";
+import { tagsMatchAny } from "../host-tag-filter";
+import { assertProxyHostAuthCompatible, forgetDeletedProxyHost } from "@/ee/monetization/host-guard";
+import { assertHostCreateApproved, assertHostDeleteApproved, assertHostUpdateApproved } from "@/ee/approvals/guard";
+import { normalizeProxyHostRateLimit, readStoredHostRateLimit } from "../caddy-rate-limit";
+import type { ProxyHostRateLimit, RateLimitMode, RateLimitRule } from "../rate-limit-rules";
+import { deleteWafExclusionsForHost, replaceWholeScopeExclusions, syncWafExclusionMirror } from "./waf-exclusion-mirror";
+import { assertAttachableAccessList } from "./access-lists";
+import { revokeForwardAuthSessionsOfDeletedHosts } from "./forward-auth";
+import { asc, containsText, desc } from "@/src/lib/db/ops";
+
+export type { ProxyHostRateLimit } from "../rate-limit-rules";
+
+/**
+ * Rate limiting in a create or update request: validated strictly by
+ * normalizeProxyHostRateLimit (caddy-rate-limit.ts), which also applies the
+ * defaults (enabled, merge mode, no rules).
+ */
+export type ProxyHostRateLimitInput = {
+  enabled?: boolean;
+  mode?: RateLimitMode;
+  rules?: Array<Partial<RateLimitRule>>;
+};
 
 /**
  * Wildcard certificates (e.g. "*.example.com") can only be issued via the ACME
@@ -135,9 +170,12 @@ export type PathAllowRule = {
 
 export type WafHostConfig = {
   enabled?: boolean;
-  mode?: 'Off' | 'On';
+  // Coraza engine value; unset inherits the global mode (see waf-host-mode.ts).
+  mode?: 'Off' | 'On' | 'DetectionOnly';
   load_owasp_crs?: boolean;
   custom_directives?: string;
+  // Whole-host rule exclusions. Mirrors the host's waf_rule_exclusions rows
+  // without a path or variable (src/lib/models/waf-exclusions.ts).
   excluded_rule_ids?: number[];
   waf_mode?: WafMode;
   // Request body limits in bytes; unset inherits the global WAF setting.
@@ -288,6 +326,8 @@ export type ProxyHostAuthentikConfig = {
   setOutpostHostHeader: boolean;
   protectedPaths: string[] | null;
   excludedPaths: string[] | null;
+  /** Client addresses that skip sign-in (IPs, CIDR ranges, private_ranges). */
+  bypassSources: string[];
 };
 
 export type ProxyHostAuthentikInput = {
@@ -300,6 +340,7 @@ export type ProxyHostAuthentikInput = {
   setOutpostHostHeader?: boolean | null;
   protectedPaths?: string[] | null;
   excludedPaths?: string[] | null;
+  bypassSources?: string[] | null;
 };
 
 type ProxyHostAuthentikMeta = {
@@ -312,6 +353,7 @@ type ProxyHostAuthentikMeta = {
   set_outpost_host_header?: boolean;
   protected_paths?: string[];
   excluded_paths?: string[];
+  bypass_sources?: string[];
 };
 
 export type MtlsConfig = {
@@ -331,8 +373,26 @@ export type MtlsConfig = {
  * while Caddy loads the config, so one bad value here makes Caddy reject the
  * whole document and *every* host stops being reconfigured — worth failing the
  * write with a clear message instead.
+ *
+ * Custom directives are checked against `previous` (the stored config): only
+ * lines the change newly drops are rejected. A stored rule that a later
+ * release started dropping must not block unrelated edits — the enable toggle,
+ * suppressing a rule, a PATCH of other fields; buildWafHandler still leaves it
+ * out and logs a warning.
  */
-function validateWafMeta(waf: WafHostConfig): WafHostConfig {
+function validateWafMeta(waf: WafHostConfig, previous: WafHostConfig | undefined, globalWaf: WafSettings | null): WafHostConfig {
+  if (waf.mode !== undefined && waf.mode !== null && waf.mode !== "Off" && waf.mode !== "On" && waf.mode !== "DetectionOnly") {
+    throw new ApiValidationError("waf.mode must be Off, On or DetectionOnly (leave it out to inherit the global mode)");
+  }
+  if (waf.excluded_rule_ids !== undefined && waf.excluded_rule_ids !== null) {
+    if (
+      !Array.isArray(waf.excluded_rule_ids) ||
+      waf.excluded_rule_ids.length > 10_000 ||
+      !waf.excluded_rule_ids.every((id) => Number.isInteger(id) && id >= 1 && id <= 2_147_483_647)
+    ) {
+      throw new ApiValidationError("waf.excluded_rule_ids must be a list of rule ids (integers from 1 to 2147483647)");
+    }
+  }
   for (const key of ["request_body_limit", "request_body_in_memory_limit"] as const) {
     const value = waf[key];
     if (value === undefined || value === null) continue;
@@ -349,13 +409,32 @@ function validateWafMeta(waf: WafHostConfig): WafHostConfig {
   ) {
     throw new ApiValidationError("waf.request_body_in_memory_limit must not exceed waf.request_body_limit");
   }
-  // Safe to echo: findInvalidBodyLimitDirective only ever returns a line that
-  // matched `<known directive name> <digits>`, never free-form user text.
-  const badDirective = findInvalidBodyLimitDirective(waf.custom_directives);
-  if (badDirective) {
-    throw new ApiValidationError(`waf.custom_directives has an out-of-range body limit: "${badDirective}" — ${bodyLimitRangeMessage("the byte count")}`);
+  // A merge-mode host's directives follow the global ones in the same handler,
+  // so they are checked after them (a reused global rule id is dropped).
+  const directiveError = customDirectivesError(
+    waf.custom_directives,
+    { crsLoaded: hostCrsLoaded(waf), precedingDirectives: wafDirectiveSource(globalWaf, waf, "").globalDirectives },
+    previous && {
+      directives: previous.custom_directives,
+      options: {
+        crsLoaded: hostCrsLoaded(previous),
+        precedingDirectives: wafDirectiveSource(globalWaf, previous, "").globalDirectives,
+      },
+    }
+  );
+  if (directiveError) {
+    throw new ApiValidationError(directiveError);
   }
   return waf;
+}
+
+/**
+ * Whether the host's WAF handler loads the OWASP CRS. In override mode the
+ * host alone decides; in merge mode an unset value inherits the global
+ * setting, which buildWafHandler resolves, so it stays undefined here.
+ */
+function hostCrsLoaded(waf: WafHostConfig): boolean | undefined {
+  return waf.waf_mode === "override" ? Boolean(waf.load_owasp_crs) : waf.load_owasp_crs;
 }
 
 function sanitizeMtlsMeta(meta: MtlsConfig | undefined): MtlsConfig | undefined {
@@ -380,14 +459,14 @@ function sanitizeMtlsMeta(meta: MtlsConfig | undefined): MtlsConfig | undefined 
   }
 
   if (Array.isArray(meta.protected_paths)) {
-    const paths = meta.protected_paths.map((path) => path?.trim().replace(/\{[^}]*\}/g, "")).filter((path): path is string => Boolean(path)); // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
+    const paths = meta.protected_paths.map((path) => (path ? stripPlaceholders(path.trim()) : "")).filter((path): path is string => Boolean(path));
     if (paths.length > 0) {
       normalized.protected_paths = paths;
     }
   }
 
   if (Array.isArray(meta.excluded_paths)) {
-    const paths = meta.excluded_paths.map((path) => path?.trim().replace(/\{[^}]*\}/g, "")).filter((path): path is string => Boolean(path)); // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
+    const paths = meta.excluded_paths.map((path) => (path ? stripPlaceholders(path.trim()) : "")).filter((path): path is string => Boolean(path));
     if (paths.length > 0) {
       normalized.excluded_paths = paths;
     }
@@ -414,25 +493,104 @@ function sanitizeMtlsMeta(meta: MtlsConfig | undefined): MtlsConfig | undefined 
   return normalized;
 }
 
-export type CpmForwardAuthConfig = {
+export type IngressiForwardAuthConfig = {
   enabled: boolean;
   protected_paths: string[] | null;
   excluded_paths: string[] | null;
+  /** Client addresses that skip sign-in (IPs, CIDR ranges, private_ranges). */
+  bypass_sources?: string[] | null;
 };
 
-export type CpmForwardAuthInput = {
+export type IngressiForwardAuthInput = {
   enabled?: boolean;
   protected_paths?: string[] | null;
   excluded_paths?: string[] | null;
+  bypass_sources?: string[] | null;
 };
 
-type CpmForwardAuthMeta = {
+/** Preset profiles for the generic forward-auth provider. */
+export const FORWARD_AUTH_PROVIDERS = ["authelia", "custom"] as const;
+export type ForwardAuthProvider = (typeof FORWARD_AUTH_PROVIDERS)[number];
+
+export const DEFAULT_AUTHELIA_FORWARD_AUTH_ENDPOINT = "/api/authz/forward-auth";
+export const DEFAULT_AUTHELIA_FORWARD_AUTH_HEADERS = [
+  "Remote-User",
+  "Remote-Groups",
+  "Remote-Email",
+  "Remote-Name",
+  "Remote-IP"
+];
+
+export type ProxyHostForwardAuthConfig = {
+  enabled: boolean;
+  provider: ForwardAuthProvider;
+  /** Base URL of the forward-auth server, e.g. http://authelia:9091 */
+  authUpstream: string | null;
+  /** URI the auth subrequest is rewritten to. May include a query string. */
+  authEndpoint: string | null;
+  /** Headers copied from the auth server's 2xx response onto the upstream request. */
+  copyHeaders: string[];
+  trustedProxies: string[];
+  /**
+   * Split browser vs API auth: non-browser requests (no Accept: text/html,
+   * or carrying X-Requested-With) get a 401 when the auth server responds
+   * with a redirect instead of being sent to the login portal. WebSocket
+   * handshakes always land in this branch.
+   */
+  apiSplit: boolean;
+  /**
+   * Requests carrying any of these headers skip forward auth entirely and go
+   * straight to the upstream, which performs its own API-key/Authorization
+   * check (e.g. Moonraker's X-Api-Key).
+   */
+  apiBypassHeaders: string[];
+  protectedPaths: string[] | null;
+  excludedPaths: string[] | null;
+  /** Client addresses that skip sign-in (IPs, CIDR ranges, private_ranges). */
+  bypassSources: string[];
+};
+
+export type ProxyHostForwardAuthInput = {
+  enabled?: boolean;
+  provider?: ForwardAuthProvider | null;
+  authUpstream?: string | null;
+  authEndpoint?: string | null;
+  copyHeaders?: string[] | null;
+  trustedProxies?: string[] | null;
+  apiSplit?: boolean | null;
+  apiBypassHeaders?: string[] | null;
+  protectedPaths?: string[] | null;
+  excludedPaths?: string[] | null;
+  bypassSources?: string[] | null;
+};
+
+type ForwardAuthMeta = {
+  enabled?: boolean;
+  provider?: ForwardAuthProvider;
+  auth_upstream?: string;
+  auth_endpoint?: string;
+  copy_headers?: string[];
+  trusted_proxies?: string[];
+  api_split?: boolean;
+  api_bypass_headers?: string[];
+  protected_paths?: string[];
+  excluded_paths?: string[];
+  bypass_sources?: string[];
+};
+
+/** Valid HTTP header name (RFC 7230 token) — copy/bypass headers end up in
+ * Caddy placeholders and matcher keys, so free-form text is not allowed. */
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z-]+$/;
+
+type IngressiForwardAuthMeta = {
   enabled?: boolean;
   protected_paths?: string[];
   excluded_paths?: string[];
+  bypass_sources?: string[];
 };
 
 type ProxyHostMeta = {
+  anubis_enabled?: boolean;
   custom_reverse_proxy_json?: string;
   custom_pre_handlers_json?: string;
   authentik?: ProxyHostAuthentikMeta;
@@ -443,7 +601,10 @@ type ProxyHostMeta = {
   geoblock_mode?: GeoBlockMode;
   waf?: WafHostConfig;
   mtls?: MtlsConfig;
-  cpm_forward_auth?: CpmForwardAuthMeta;
+  // Stored under its pre-rename key, which existing databases, exports and
+  // replicas on older versions read.
+  cpm_forward_auth?: IngressiForwardAuthMeta;
+  forward_auth?: ForwardAuthMeta;
   redirects?: RedirectRule[];
   rewrite?: RewriteConfig;
   location_rules?: LocationRuleMeta[];
@@ -451,9 +612,11 @@ type ProxyHostMeta = {
   path_blocks?: PathBlockRule[];
   path_rewrites?: PathRewriteRule[];
   error_pages?: ErrorPageRule[];
+  rate_limit?: ProxyHostRateLimit;
 };
 
 export type ProxyHost = {
+  anubisEnabled?: boolean;
   id: number;
   name: string;
   domains: string[];
@@ -479,7 +642,8 @@ export type ProxyHost = {
   geoblockMode: GeoBlockMode;
   waf: WafHostConfig | null;
   mtls: MtlsConfig | null;
-  cpmForwardAuth: CpmForwardAuthConfig | null;
+  ingressiForwardAuth: IngressiForwardAuthConfig | null;
+  forwardAuth: ProxyHostForwardAuthConfig | null;
   redirects: RedirectRule[];
   rewrite: RewriteConfig | null;
   locationRules: LocationRule[];
@@ -487,6 +651,10 @@ export type ProxyHost = {
   pathBlocks: PathBlockRule[];
   pathRewrites: PathRewriteRule[];
   errorPages: ErrorPageRule[];
+  /** Per-host rate limiting; null inherits the global defaults. */
+  rateLimit: ProxyHostRateLimit | null;
+  /** Free-form tags (src/lib/host-tags.ts); a custom role can be scoped to them. */
+  tags: string[];
 };
 
 export type ProxyHostInput = {
@@ -512,7 +680,8 @@ export type ProxyHostInput = {
   geoblockMode?: GeoBlockMode;
   waf?: WafHostConfig | null;
   mtls?: MtlsConfig | null;
-  cpmForwardAuth?: CpmForwardAuthInput | null;
+  ingressiForwardAuth?: IngressiForwardAuthInput | null;
+  forwardAuth?: ProxyHostForwardAuthInput | null;
   redirects?: RedirectRule[] | null;
   rewrite?: RewriteConfig | null;
   locationRules?: LocationRuleInput[] | null;
@@ -520,6 +689,10 @@ export type ProxyHostInput = {
   pathBlocks?: PathBlockRule[] | null;
   pathRewrites?: PathRewriteRule[] | null;
   errorPages?: ErrorPageRule[] | null;
+  /** Per-host rate limiting; null removes it, so the host inherits the global defaults. */
+  rateLimit?: ProxyHostRateLimitInput | null;
+  /** Free-form tags; an array of strings (or a comma-separated string). */
+  tags?: string[] | null;
 };
 
 type ProxyHostRow = typeof proxyHosts.$inferSelect;
@@ -555,7 +728,7 @@ function sanitizeAuthentikMeta(meta: ProxyHostAuthentikMeta | undefined): ProxyH
 
   const authEndpoint = normalizeMetaValue(meta.auth_endpoint ?? null);
   if (authEndpoint) {
-    normalized.auth_endpoint = authEndpoint.replace(/\{[^}]*\}/g, ""); // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
+    normalized.auth_endpoint = stripPlaceholders(authEndpoint);
   }
 
   if (Array.isArray(meta.copy_headers)) {
@@ -577,19 +750,92 @@ function sanitizeAuthentikMeta(meta: ProxyHostAuthentikMeta | undefined): ProxyH
   }
 
   if (Array.isArray(meta.protected_paths)) {
-    const paths = meta.protected_paths.map((path) => path?.trim().replace(/\{[^}]*\}/g, "")).filter((path): path is string => Boolean(path));
+    const paths = meta.protected_paths.map((path) => (path ? stripPlaceholders(path.trim()) : "")).filter((path): path is string => Boolean(path));
     if (paths.length > 0) {
       normalized.protected_paths = paths;
     }
   }
 
   if (Array.isArray(meta.excluded_paths)) {
-    const paths = meta.excluded_paths.map((path) => path?.trim().replace(/\{[^}]*\}/g, "")).filter((path): path is string => Boolean(path));
+    const paths = meta.excluded_paths.map((path) => (path ? stripPlaceholders(path.trim()) : "")).filter((path): path is string => Boolean(path));
     if (paths.length > 0) {
       normalized.excluded_paths = paths;
     }
   }
 
+  const sources = readBypassSources(meta.bypass_sources);
+  if (sources.length > 0) {
+    normalized.bypass_sources = sources;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+/**
+ * Sanitizes the generic forward-auth meta block read from storage. Header
+ * names are validated against the RFC 7230 token grammar because they are
+ * interpolated into Caddy placeholder strings and matcher keys; Caddy
+ * placeholders (`{...}`) are stripped from the auth endpoint and paths to
+ * prevent request-context injection into generated config.
+ */
+function sanitizeForwardAuthMeta(meta: ForwardAuthMeta | undefined): ForwardAuthMeta | undefined {
+  if (!meta) return undefined;
+  const normalized: ForwardAuthMeta = {};
+  if (meta.enabled !== undefined) {
+    normalized.enabled = Boolean(meta.enabled);
+  }
+  if (meta.provider && (FORWARD_AUTH_PROVIDERS as readonly string[]).includes(meta.provider)) {
+    normalized.provider = meta.provider;
+  }
+  const upstream = normalizeMetaValue(meta.auth_upstream ?? null);
+  if (upstream) {
+    normalized.auth_upstream = upstream;
+  }
+  const endpoint = normalizeMetaValue(meta.auth_endpoint ?? null);
+  if (endpoint) {
+    normalized.auth_endpoint = stripPlaceholders(endpoint);
+  }
+  if (Array.isArray(meta.copy_headers)) {
+    const headers = meta.copy_headers
+      .map((header) => header?.trim())
+      .filter((header): header is string => Boolean(header) && HEADER_NAME_RE.test(header));
+    if (headers.length > 0) {
+      normalized.copy_headers = headers;
+    }
+  }
+  if (Array.isArray(meta.trusted_proxies)) {
+    const proxies = meta.trusted_proxies.map((proxy) => proxy?.trim()).filter((proxy): proxy is string => Boolean(proxy));
+    if (proxies.length > 0) {
+      normalized.trusted_proxies = proxies;
+    }
+  }
+  if (meta.api_split !== undefined) {
+    normalized.api_split = Boolean(meta.api_split);
+  }
+  if (Array.isArray(meta.api_bypass_headers)) {
+    const headers = meta.api_bypass_headers
+      .map((header) => header?.trim())
+      .filter((header): header is string => Boolean(header) && HEADER_NAME_RE.test(header));
+    if (headers.length > 0) {
+      normalized.api_bypass_headers = headers;
+    }
+  }
+  if (Array.isArray(meta.protected_paths)) {
+    const paths = meta.protected_paths.map((p) => (p ? stripPlaceholders(p.trim()) : "")).filter((p): p is string => Boolean(p));
+    if (paths.length > 0) {
+      normalized.protected_paths = paths;
+    }
+  }
+  if (Array.isArray(meta.excluded_paths)) {
+    const paths = meta.excluded_paths.map((p) => (p ? stripPlaceholders(p.trim()) : "")).filter((p): p is string => Boolean(p));
+    if (paths.length > 0) {
+      normalized.excluded_paths = paths;
+    }
+  }
+  const sources = readBypassSources(meta.bypass_sources);
+  if (sources.length > 0) {
+    normalized.bypass_sources = sources;
+  }
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
@@ -757,23 +1003,27 @@ function sanitizeUpstreamDnsResolutionMeta(
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
-function sanitizeCpmForwardAuthMeta(meta: CpmForwardAuthMeta | undefined): CpmForwardAuthMeta | undefined {
+function sanitizeIngressiForwardAuthMeta(meta: IngressiForwardAuthMeta | undefined): IngressiForwardAuthMeta | undefined {
   if (!meta) return undefined;
-  const normalized: CpmForwardAuthMeta = {};
+  const normalized: IngressiForwardAuthMeta = {};
   if (meta.enabled !== undefined) {
     normalized.enabled = Boolean(meta.enabled);
   }
   if (Array.isArray(meta.protected_paths)) {
-    const paths = meta.protected_paths.map((p) => p?.trim().replace(/\{[^}]*\}/g, "")).filter((p): p is string => Boolean(p)); // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
+    const paths = meta.protected_paths.map((p) => (p ? stripPlaceholders(p.trim()) : "")).filter((p): p is string => Boolean(p));
     if (paths.length > 0) {
       normalized.protected_paths = paths;
     }
   }
   if (Array.isArray(meta.excluded_paths)) {
-    const paths = meta.excluded_paths.map((p) => p?.trim().replace(/\{[^}]*\}/g, "")).filter((p): p is string => Boolean(p)); // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
+    const paths = meta.excluded_paths.map((p) => (p ? stripPlaceholders(p.trim()) : "")).filter((p): p is string => Boolean(p));
     if (paths.length > 0) {
       normalized.excluded_paths = paths;
     }
+  }
+  const sources = readBypassSources(meta.bypass_sources);
+  if (sources.length > 0) {
+    normalized.bypass_sources = sources;
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -783,6 +1033,7 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
     return null;
   }
   const normalized: ProxyHostMeta = {};
+  if (typeof meta.anubis_enabled === "boolean") normalized.anubis_enabled = meta.anubis_enabled;
   const reverse = normalizeMetaValue(meta.custom_reverse_proxy_json ?? null);
   const preHandlers = normalizeMetaValue(meta.custom_pre_handlers_json ?? null);
 
@@ -821,8 +1072,9 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
     normalized.geoblock_mode = meta.geoblock_mode;
   }
 
+  // Validated in buildMeta, and only when the caller supplies `waf`.
   if (meta.waf) {
-    normalized.waf = validateWafMeta(meta.waf);
+    normalized.waf = meta.waf;
   }
 
   if (meta.mtls) {
@@ -833,10 +1085,15 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
   }
 
   if (meta.cpm_forward_auth) {
-    const cfa = sanitizeCpmForwardAuthMeta(meta.cpm_forward_auth);
+    const cfa = sanitizeIngressiForwardAuthMeta(meta.cpm_forward_auth);
     if (cfa) {
       normalized.cpm_forward_auth = cfa;
     }
+  }
+
+  const forwardAuth = sanitizeForwardAuthMeta(meta.forward_auth);
+  if (forwardAuth) {
+    normalized.forward_auth = forwardAuth;
   }
 
   if (meta.redirects && meta.redirects.length > 0) {
@@ -869,6 +1126,10 @@ function serializeMeta(meta: ProxyHostMeta | null | undefined) {
     }
   }
 
+  // Validated in buildMeta, and only when the caller supplies `rateLimit`.
+  if (meta.rate_limit) {
+    normalized.rate_limit = meta.rate_limit;
+  }
   const scopedMtls = Boolean(normalized.mtls?.protected_paths?.length || normalized.mtls?.excluded_paths?.length);
   if (scopedMtls && normalized.cpm_forward_auth?.enabled) {
     throw new ApiValidationError("Scoped mTLS cannot be combined with forward authentication until both checks are composed");
@@ -888,8 +1149,7 @@ function sanitizeRedirectRules(value: unknown): RedirectRule[] {
       typeof item.to === "string" && item.to.trim() &&
       [301, 302, 307, 308].includes(item.status)
     ) {
-      // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
-      valid.push({ from: item.from.trim().replace(/\{[^}]*\}/g, ""), to: item.to.trim().replace(/\{[^}]*\}/g, ""), status: item.status });
+      valid.push({ from: stripPlaceholders(item.from.trim()), to: stripPlaceholders(item.to.trim()), status: item.status });
     }
   }
   return valid;
@@ -908,8 +1168,7 @@ function sanitizePathAllows(value: unknown): PathAllowRule[] {
   const valid: PathAllowRule[] = [];
   for (const item of value) {
     if (item && typeof item === "object" && typeof item.path === "string" && item.path.trim()) {
-      // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
-      const path = item.path.trim().replace(/\{[^}]*\}/g, "");
+      const path = stripPlaceholders(item.path.trim());
       if (path) {
         valid.push({ path });
       }
@@ -930,8 +1189,7 @@ function sanitizePathBlocks(value: unknown): PathBlockRule[] {
       (PATH_BLOCK_STATUS_CODES as readonly number[]).includes(item.status)
     ) {
       const rule: PathBlockRule = {
-        // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
-        path: item.path.trim().replace(/\{[^}]*\}/g, ""),
+        path: stripPlaceholders(item.path.trim()),
         status: item.status as PathBlockStatusCode,
       };
       if (typeof item.body === "string" && item.body.length > 0) {
@@ -955,10 +1213,8 @@ function sanitizePathRewrites(value: unknown): PathRewriteRule[] {
       typeof item.from === "string" && item.from.trim() &&
       typeof item.to === "string" && item.to.trim()
     ) {
-      // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
-      const from = item.from.trim().replace(/\{[^}]*\}/g, "");
-      // codeql[js/polynomial-redos] false positive: [^}]* is linear, no backtracking ambiguity
-      const to = item.to.trim().replace(/\{[^}]*\}/g, "");
+      const from = stripPlaceholders(item.from.trim());
+      const to = stripPlaceholders(item.to.trim());
       if (from && to) {
         valid.push({ from, to });
       }
@@ -1072,6 +1328,7 @@ function parseMeta(value: string | null): ProxyHostMeta {
   try {
     const parsed = JSON.parse(value) as ProxyHostMeta;
     return {
+      anubis_enabled: typeof parsed.anubis_enabled === "boolean" ? parsed.anubis_enabled : undefined,
       custom_reverse_proxy_json: normalizeMetaValue(parsed.custom_reverse_proxy_json ?? null) ?? undefined,
       custom_pre_handlers_json: normalizeMetaValue(parsed.custom_pre_handlers_json ?? null) ?? undefined,
       authentik: sanitizeAuthentikMeta(parsed.authentik),
@@ -1082,7 +1339,8 @@ function parseMeta(value: string | null): ProxyHostMeta {
       geoblock_mode: parsed.geoblock_mode,
       waf: parsed.waf,
       mtls: parsed.mtls,
-      cpm_forward_auth: sanitizeCpmForwardAuthMeta(parsed.cpm_forward_auth),
+      cpm_forward_auth: sanitizeIngressiForwardAuthMeta(parsed.cpm_forward_auth),
+      forward_auth: sanitizeForwardAuthMeta(parsed.forward_auth),
       redirects: sanitizeRedirectRules(parsed.redirects),
       rewrite: sanitizeRewriteConfig(parsed.rewrite) ?? undefined,
       location_rules: sanitizeLocationRuleMetas(parsed.location_rules),
@@ -1090,6 +1348,7 @@ function parseMeta(value: string | null): ProxyHostMeta {
       path_blocks: sanitizePathBlocks(parsed.path_blocks),
       path_rewrites: sanitizePathRewrites(parsed.path_rewrites),
       error_pages: sanitizeErrorPageRules(parsed.error_pages),
+      rate_limit: readStoredHostRateLimit(parsed.rate_limit) ?? undefined,
     };
   } catch (error) {
     console.warn("Failed to parse proxy host meta", error);
@@ -1189,12 +1448,169 @@ function normalizeAuthentikInput(
     }
   }
 
+  if (input.bypassSources !== undefined) {
+    const sources = normalizeBypassSources(input.bypassSources, "authentik.bypassSources");
+    if (sources.length > 0) {
+      next.bypass_sources = sources;
+    } else {
+      delete next.bypass_sources;
+    }
+  }
   if (next.enabled && next.outpost_domain && /[:/\s{}]/.test(next.outpost_domain)) {
     throw new Error("Outpost Domain must be a path namespace such as outpost.goauthentik.io, not an SSO URL. Put the server URL in Outpost Upstream URL.");
   }
 
   if ((next.enabled ?? false) && next.outpost_domain && !next.auth_endpoint) {
     next.auth_endpoint = `/${next.outpost_domain}/auth/caddy`;
+  }
+
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function normalizeForwardAuthInput(
+  input: ProxyHostForwardAuthInput | null | undefined,
+  existing: ForwardAuthMeta | undefined
+): ForwardAuthMeta | undefined {
+  if (input === undefined) {
+    return existing;
+  }
+  if (input === null) {
+    return undefined;
+  }
+
+  const next: ForwardAuthMeta = { ...(existing ?? {}) };
+
+  if (input.enabled !== undefined) {
+    next.enabled = Boolean(input.enabled);
+  }
+
+  if (input.provider !== undefined) {
+    if (input.provider && (FORWARD_AUTH_PROVIDERS as readonly string[]).includes(input.provider)) {
+      next.provider = input.provider;
+    } else {
+      delete next.provider;
+    }
+  }
+
+  if (input.authUpstream !== undefined) {
+    const upstream = normalizeMetaValue(input.authUpstream ?? null);
+    if (upstream) {
+      next.auth_upstream = upstream;
+    } else {
+      delete next.auth_upstream;
+    }
+  }
+
+  if (input.authEndpoint !== undefined) {
+    const endpoint = normalizeMetaValue(input.authEndpoint ?? null);
+    if (endpoint) {
+      next.auth_endpoint = stripPlaceholders(endpoint);
+    } else {
+      delete next.auth_endpoint;
+    }
+  }
+
+  if (input.copyHeaders !== undefined) {
+    const headers = (input.copyHeaders ?? [])
+      .map((header) => header?.trim())
+      .filter((header): header is string => Boolean(header) && HEADER_NAME_RE.test(header));
+    if (headers.length > 0) {
+      next.copy_headers = headers;
+    } else {
+      delete next.copy_headers;
+    }
+  }
+
+  if (input.trustedProxies !== undefined) {
+    const proxies = (input.trustedProxies ?? [])
+      .map((proxy) => proxy?.trim())
+      .filter((proxy): proxy is string => Boolean(proxy));
+    if (proxies.length > 0) {
+      next.trusted_proxies = proxies;
+    } else {
+      delete next.trusted_proxies;
+    }
+  }
+
+  if (input.apiSplit !== undefined) {
+    next.api_split = Boolean(input.apiSplit);
+  }
+
+  if (input.apiBypassHeaders !== undefined) {
+    const headers = (input.apiBypassHeaders ?? [])
+      .map((header) => header?.trim())
+      .filter((header): header is string => Boolean(header) && HEADER_NAME_RE.test(header));
+    if (headers.length > 0) {
+      next.api_bypass_headers = headers;
+    } else {
+      delete next.api_bypass_headers;
+    }
+  }
+
+  if (input.protectedPaths !== undefined) {
+    const paths = (input.protectedPaths ?? [])
+      .map((path) => path?.trim())
+      .filter((path): path is string => Boolean(path));
+    if (paths.length > 0) {
+      next.protected_paths = paths;
+    } else {
+      delete next.protected_paths;
+    }
+  }
+
+  if (input.excludedPaths !== undefined) {
+    const paths = (input.excludedPaths ?? [])
+      .map((path) => path?.trim())
+      .filter((path): path is string => Boolean(path));
+    if (paths.length > 0) {
+      next.excluded_paths = paths;
+    } else {
+      delete next.excluded_paths;
+    }
+  }
+
+  if (input.bypassSources !== undefined) {
+    const sources = normalizeBypassSources(input.bypassSources, "forwardAuth.bypassSources");
+    if (sources.length > 0) {
+      next.bypass_sources = sources;
+    } else {
+      delete next.bypass_sources;
+    }
+  }
+
+  // Apply provider preset defaults for fields the caller left blank. Only
+  // used when the provider is set on this request; explicit empty values on
+  // later updates still clear the field.
+  if (input.provider !== undefined && (next.enabled ?? false)) {
+    const provider = next.provider ?? "authelia";
+    if (!next.auth_endpoint && provider === "authelia") {
+      next.auth_endpoint = DEFAULT_AUTHELIA_FORWARD_AUTH_ENDPOINT;
+    }
+    if (!next.copy_headers && provider === "authelia") {
+      next.copy_headers = [...DEFAULT_AUTHELIA_FORWARD_AUTH_HEADERS];
+    }
+  }
+
+  // Fail closed on enabled-but-incomplete configs: config generation skips
+  // hosts it cannot parse, so an invalid upstream/endpoint would silently
+  // publish the host UNPROTECTED rather than disabled.
+  if (next.enabled) {
+    const provider = next.provider ?? "authelia";
+    const upstream = next.auth_upstream;
+    if (!upstream) {
+      throw new ApiValidationError("forwardAuth.authUpstream is required when generic forward auth is enabled");
+    }
+    try {
+      const parsed = new URL(upstream);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("bad protocol");
+      }
+    } catch {
+      throw new ApiValidationError("forwardAuth.authUpstream must be a valid http(s) URL");
+    }
+    if (provider === "custom" && !next.auth_endpoint) {
+      throw new ApiValidationError("forwardAuth.authEndpoint is required when the provider preset is 'custom'");
+    }
   }
 
   return Object.keys(next).length > 0 ? next : undefined;
@@ -1489,7 +1905,41 @@ function normalizeUpstreamDnsResolutionInput(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
-function buildMeta(existing: ProxyHostMeta, input: Partial<ProxyHostInput>): string | null {
+/**
+ * Rejects hosts that enable more than one forward-auth provider at once.
+ *
+ * Caddy config generation applies a fixed precedence (authentik > generic
+ * forward_auth > Ingressi forward auth), so a host with two enabled providers
+ * would silently authenticate via only one of them — a config the UI shows
+ * as active but that does not do what the admin asked for. Legacy hosts that
+ * already carry a conflicting combination keep working (generation precedence
+ * is unchanged); the conflict is only rejected when the current request
+ * itself enables one of the providers, so unrelated edits of such hosts
+ * still succeed.
+ */
+function assertSingleForwardAuthProvider(meta: ProxyHostMeta, input: Partial<ProxyHostInput>): void {
+  const enabled: string[] = [];
+  if (meta.authentik?.enabled) enabled.push("Authentik forward auth");
+  if (meta.forward_auth?.enabled) enabled.push("generic forward auth");
+  if (meta.cpm_forward_auth?.enabled) enabled.push(`${brandName()} forward auth`);
+  if (enabled.length < 2) {
+    return;
+  }
+  const touched =
+    input.authentik !== undefined || input.forwardAuth !== undefined || input.ingressiForwardAuth !== undefined;
+  if (!touched) {
+    return;
+  }
+  throw new ApiValidationError(
+    `Only one forward-auth provider can be enabled per host — this host would have ${enabled.join(" + ")}. Disable one of them first.`
+  );
+}
+
+function buildMeta(
+  existing: ProxyHostMeta,
+  input: Partial<ProxyHostInput>,
+  globalWaf: WafSettings | null = null
+): string | null {
   const next: ProxyHostMeta = { ...existing };
 
   if (input.customReverseProxyJson !== undefined) {
@@ -1565,7 +2015,7 @@ function buildMeta(existing: ProxyHostMeta, input: Partial<ProxyHostInput>): str
 
   if (input.waf !== undefined) {
     if (input.waf) {
-      next.waf = validateWafMeta(input.waf);
+      next.waf = validateWafMeta(input.waf, existing.waf, globalWaf);
     } else {
       delete next.waf;
     }
@@ -1582,20 +2032,39 @@ function buildMeta(existing: ProxyHostMeta, input: Partial<ProxyHostInput>): str
     }
   }
 
-  if (input.cpmForwardAuth !== undefined) {
-    if (input.cpmForwardAuth && input.cpmForwardAuth.enabled) {
-      const cfa: CpmForwardAuthMeta = { enabled: true };
-      if (input.cpmForwardAuth.protected_paths && input.cpmForwardAuth.protected_paths.length > 0) {
-        cfa.protected_paths = input.cpmForwardAuth.protected_paths;
+  if (input.ingressiForwardAuth !== undefined) {
+    if (input.ingressiForwardAuth && input.ingressiForwardAuth.enabled) {
+      const cfa: IngressiForwardAuthMeta = { enabled: true };
+      if (input.ingressiForwardAuth.protected_paths && input.ingressiForwardAuth.protected_paths.length > 0) {
+        cfa.protected_paths = input.ingressiForwardAuth.protected_paths;
       }
-      if (input.cpmForwardAuth.excluded_paths && input.cpmForwardAuth.excluded_paths.length > 0) {
-        cfa.excluded_paths = input.cpmForwardAuth.excluded_paths;
+      if (input.ingressiForwardAuth.excluded_paths && input.ingressiForwardAuth.excluded_paths.length > 0) {
+        cfa.excluded_paths = input.ingressiForwardAuth.excluded_paths;
+      }
+      // Unlike the paths, the list is kept when the request does not mention it.
+      const bypassSources =
+        input.ingressiForwardAuth.bypass_sources === undefined
+          ? readBypassSources(existing.cpm_forward_auth?.bypass_sources)
+          : normalizeBypassSources(input.ingressiForwardAuth.bypass_sources, "ingressiForwardAuth.bypass_sources");
+      if (bypassSources.length > 0) {
+        cfa.bypass_sources = bypassSources;
       }
       next.cpm_forward_auth = cfa;
     } else {
       delete next.cpm_forward_auth;
     }
   }
+
+  if (input.forwardAuth !== undefined) {
+    const forwardAuth = normalizeForwardAuthInput(input.forwardAuth, existing.forward_auth);
+    if (forwardAuth) {
+      next.forward_auth = forwardAuth;
+    } else {
+      delete next.forward_auth;
+    }
+  }
+
+  assertSingleForwardAuthProvider(next, input);
 
   if (input.redirects !== undefined) {
     const rules = sanitizeRedirectRules(input.redirects ?? []);
@@ -1660,7 +2129,23 @@ function buildMeta(existing: ProxyHostMeta, input: Partial<ProxyHostInput>): str
     }
   }
 
+  if (input.rateLimit !== undefined) {
+    const rateLimit = input.rateLimit === null ? null : normalizeProxyHostRateLimit(input.rateLimit);
+    // Disabled without rules is the same as none: the host inherits the defaults.
+    if (rateLimit && (rateLimit.enabled || rateLimit.rules.length > 0)) {
+      next.rate_limit = rateLimit;
+    } else {
+      delete next.rate_limit;
+    }
+  }
+
   return serializeMeta(next);
+}
+
+/** Only a host that has a list shows one, so hosts without keep the shape they always had. */
+function hydrateIngressiBypassSources(meta: IngressiForwardAuthMeta): { bypass_sources?: string[] } {
+  const sources = readBypassSources(meta.bypass_sources);
+  return sources.length > 0 ? { bypass_sources: sources } : {};
 }
 
 function hydrateAuthentik(meta: ProxyHostAuthentikMeta | undefined): ProxyHostAuthentikConfig | null {
@@ -1695,7 +2180,8 @@ function hydrateAuthentik(meta: ProxyHostAuthentikMeta | undefined): ProxyHostAu
     trustedProxies,
     setOutpostHostHeader,
     protectedPaths,
-    excludedPaths
+    excludedPaths,
+    bypassSources: readBypassSources(meta.bypass_sources)
   };
 }
 
@@ -1729,6 +2215,87 @@ function dehydrateAuthentik(config: ProxyHostAuthentikConfig | null): ProxyHostA
   }
   if (config.excludedPaths && config.excludedPaths.length > 0) {
     meta.excluded_paths = [...config.excludedPaths];
+  }
+  if (config.bypassSources.length > 0) {
+    meta.bypass_sources = [...config.bypassSources];
+  }
+
+  return meta;
+}
+
+function hydrateForwardAuth(meta: ForwardAuthMeta | undefined): ProxyHostForwardAuthConfig | null {
+  if (!meta) {
+    return null;
+  }
+
+  const provider: ForwardAuthProvider = meta.provider ?? "authelia";
+  const authEndpoint =
+    normalizeMetaValue(meta.auth_endpoint ?? null) ??
+    (provider === "authelia" ? DEFAULT_AUTHELIA_FORWARD_AUTH_ENDPOINT : null);
+  const copyHeaders =
+    Array.isArray(meta.copy_headers) && meta.copy_headers.length > 0
+      ? meta.copy_headers
+      : provider === "authelia"
+        ? [...DEFAULT_AUTHELIA_FORWARD_AUTH_HEADERS]
+        : [];
+  const trustedProxies =
+    Array.isArray(meta.trusted_proxies) && meta.trusted_proxies.length > 0
+      ? meta.trusted_proxies
+      : DEFAULT_AUTHENTIK_TRUSTED_PROXIES;
+
+  return {
+    enabled: Boolean(meta.enabled),
+    provider,
+    authUpstream: normalizeMetaValue(meta.auth_upstream ?? null),
+    authEndpoint,
+    copyHeaders,
+    trustedProxies,
+    apiSplit: Boolean(meta.api_split),
+    apiBypassHeaders: Array.isArray(meta.api_bypass_headers) ? meta.api_bypass_headers : [],
+    protectedPaths:
+      Array.isArray(meta.protected_paths) && meta.protected_paths.length > 0 ? meta.protected_paths : null,
+    excludedPaths:
+      Array.isArray(meta.excluded_paths) && meta.excluded_paths.length > 0 ? meta.excluded_paths : null,
+    bypassSources: readBypassSources(meta.bypass_sources)
+  };
+}
+
+function dehydrateForwardAuth(config: ProxyHostForwardAuthConfig | null): ForwardAuthMeta | undefined {
+  if (!config) {
+    return undefined;
+  }
+
+  const meta: ForwardAuthMeta = {
+    enabled: config.enabled,
+    provider: config.provider
+  };
+
+  if (config.authUpstream) {
+    meta.auth_upstream = config.authUpstream;
+  }
+  if (config.authEndpoint) {
+    meta.auth_endpoint = config.authEndpoint;
+  }
+  if (config.copyHeaders.length > 0) {
+    meta.copy_headers = [...config.copyHeaders];
+  }
+  if (config.trustedProxies.length > 0) {
+    meta.trusted_proxies = [...config.trustedProxies];
+  }
+  if (config.apiSplit) {
+    meta.api_split = true;
+  }
+  if (config.apiBypassHeaders.length > 0) {
+    meta.api_bypass_headers = [...config.apiBypassHeaders];
+  }
+  if (config.protectedPaths && config.protectedPaths.length > 0) {
+    meta.protected_paths = [...config.protectedPaths];
+  }
+  if (config.excludedPaths && config.excludedPaths.length > 0) {
+    meta.excluded_paths = [...config.excludedPaths];
+  }
+  if (config.bypassSources.length > 0) {
+    meta.bypass_sources = [...config.bypassSources];
   }
 
   return meta;
@@ -1969,6 +2536,7 @@ function parseProxyHost(row: ProxyHostRow): ProxyHost {
   const meta = parseMeta(row.meta ?? null);
   return {
     id: row.id,
+    anubisEnabled: meta.anubis_enabled !== false,
     name: row.name,
     domains: JSON.parse(row.domains),
     upstreams: JSON.parse(row.upstreams),
@@ -1993,9 +2561,15 @@ function parseProxyHost(row: ProxyHostRow): ProxyHost {
     geoblockMode: meta.geoblock_mode ?? "merge",
     waf: meta.waf ?? null,
     mtls: meta.mtls ?? null,
-    cpmForwardAuth: meta.cpm_forward_auth?.enabled
-      ? { enabled: true, protected_paths: meta.cpm_forward_auth.protected_paths ?? null, excluded_paths: meta.cpm_forward_auth.excluded_paths ?? null }
+    ingressiForwardAuth: meta.cpm_forward_auth?.enabled
+      ? {
+          enabled: true,
+          protected_paths: meta.cpm_forward_auth.protected_paths ?? null,
+          excluded_paths: meta.cpm_forward_auth.excluded_paths ?? null,
+          ...hydrateIngressiBypassSources(meta.cpm_forward_auth)
+        }
       : null,
+    forwardAuth: hydrateForwardAuth(meta.forward_auth),
     redirects: meta.redirects ?? [],
     rewrite: meta.rewrite ?? null,
     locationRules: hydrateLocationRules(meta.location_rules),
@@ -2003,23 +2577,42 @@ function parseProxyHost(row: ProxyHostRow): ProxyHost {
     pathBlocks: meta.path_blocks ?? [],
     pathRewrites: meta.path_rewrites ?? [],
     errorPages: meta.error_pages ?? [],
+    rateLimit: meta.rate_limit ?? null,
+    tags: parseStoredTags(row.tags),
   };
 }
 
-export async function listProxyHosts(): Promise<ProxyHost[]> {
-  const hosts = await db.select().from(proxyHosts).orderBy(desc(proxyHosts.createdAt));
+/**
+ * The hosts a tag scope covers: null for every host, otherwise those carrying
+ * at least one of the tags (see scopeTagsFor in src/lib/permissions.ts).
+ */
+export function proxyHostScopeCondition(scopeTags: readonly string[] | null | undefined): SQL | undefined {
+  return scopeTags ? tagsMatchAny(proxyHosts.tags, scopeTags) : undefined;
+}
+
+function proxyHostSearchCondition(search?: string): SQL | undefined {
+  return search
+    ? or(
+        containsText(proxyHosts.name, search),
+        containsText(proxyHosts.domains, search),
+        containsText(proxyHosts.upstreams, search),
+        containsText(proxyHosts.tags, search)
+      )
+    : undefined;
+}
+
+export async function listProxyHosts(scopeTags?: readonly string[] | null): Promise<ProxyHost[]> {
+  const hosts = await appDb
+    .select()
+    .from(proxyHosts)
+    .where(proxyHostScopeCondition(scopeTags))
+    .orderBy(desc(proxyHosts.createdAt), desc(proxyHosts.id));
   return hosts.map(parseProxyHost);
 }
 
-export async function countProxyHosts(search?: string): Promise<number> {
-  const where = search
-    ? or(
-        like(proxyHosts.name, `%${search}%`),
-        like(proxyHosts.domains, `%${search}%`),
-        like(proxyHosts.upstreams, `%${search}%`)
-      )
-    : undefined;
-  const [row] = await db.select({ value: count() }).from(proxyHosts).where(where);
+export async function countProxyHosts(search?: string, scopeTags?: readonly string[] | null): Promise<number> {
+  const where = and(proxyHostSearchCondition(search), proxyHostScopeCondition(scopeTags));
+  const [row] = await appDb.select({ value: count() }).from(proxyHosts).where(where);
   return row?.value ?? 0;
 }
 
@@ -2037,28 +2630,64 @@ export async function listProxyHostsPaginated(
   offset: number,
   search?: string,
   sortBy?: string,
-  sortDir?: "asc" | "desc"
+  sortDir?: "asc" | "desc",
+  scopeTags?: readonly string[] | null
 ): Promise<ProxyHost[]> {
-  const where = search
-    ? or(
-        like(proxyHosts.name, `%${search}%`),
-        like(proxyHosts.domains, `%${search}%`),
-        like(proxyHosts.upstreams, `%${search}%`)
-      )
-    : undefined;
+  const where = and(proxyHostSearchCondition(search), proxyHostScopeCondition(scopeTags));
   const col = (sortBy && PROXY_HOST_SORT_COLUMNS[sortBy]) || proxyHosts.createdAt;
   const dir = sortDir === "asc" ? asc : desc;
-  const hosts = await db
+  const hosts = await appDb
     .select()
     .from(proxyHosts)
     .where(where)
-    .orderBy(dir(col))
+    // The id last, so that every page is the same on every database.
+    .orderBy(dir(col), dir(proxyHosts.id))
     .limit(limit)
     .offset(offset);
   return hosts.map(parseProxyHost);
 }
 
-export async function createProxyHost(input: ProxyHostInput, actorUserId: number) {
+/** Pre-rename name of `ingressiForwardAuth` in REST requests and responses. */
+const LEGACY_FORWARD_AUTH_FIELD = "cpmForwardAuth";
+
+/**
+ * REST clients written before the rename send the built-in forward-auth
+ * settings under LEGACY_FORWARD_AUTH_FIELD. It is read when the new name is
+ * absent, and sending both with different values is refused rather than
+ * silently dropping one of them.
+ */
+function resolveLegacyInputFields<T extends Partial<ProxyHostInput>>(input: T): T {
+  if (!input || typeof input !== "object" || !(LEGACY_FORWARD_AUTH_FIELD in input)) {
+    return input;
+  }
+  const { [LEGACY_FORWARD_AUTH_FIELD]: legacy, ...rest } = input as T & {
+    [LEGACY_FORWARD_AUTH_FIELD]?: IngressiForwardAuthInput | null;
+  };
+  const current = rest as T;
+  if (legacy === undefined) {
+    return current;
+  }
+  if (current.ingressiForwardAuth !== undefined && !isDeepStrictEqual(current.ingressiForwardAuth, legacy)) {
+    throw new ApiValidationError(
+      `${LEGACY_FORWARD_AUTH_FIELD} is the deprecated name of ingressiForwardAuth; send only ingressiForwardAuth`
+    );
+  }
+  return { ...current, ingressiForwardAuth: current.ingressiForwardAuth ?? legacy };
+}
+
+/**
+ * A proxy host as the REST API returns it: the built-in forward-auth settings
+ * also appear under LEGACY_FORWARD_AUTH_FIELD, for clients written before the
+ * rename.
+ */
+export function toApiProxyHost(
+  host: ProxyHost
+): ProxyHost & { [LEGACY_FORWARD_AUTH_FIELD]: IngressiForwardAuthConfig | null } {
+  return { ...host, [LEGACY_FORWARD_AUTH_FIELD]: host.ingressiForwardAuth };
+}
+
+export async function createProxyHost(rawInput: ProxyHostInput, actorUserId: number) {
+  const input = resolveLegacyInputFields(rawInput);
   const domains = normalizeProxyHostDomains(input.domains ?? []);
 
   if (!input.upstreams || input.upstreams.length === 0) {
@@ -2066,36 +2695,51 @@ export async function createProxyHost(input: ProxyHostInput, actorUserId: number
   }
   input.upstreams.forEach(validateUpstreamProtocol);
   await assertWildcardIssuable(domains, input.certificateId ?? null);
+  const tags = normalizeTags(input.tags);
+  // Change approvals (ee): a host a policy protects is only created through an approved change request.
+  await assertHostCreateApproved("proxy_host", input.name, tags);
+  await assertAttachableAccessList(input.accessListId);
 
   const now = nowIso();
-  const meta = buildMeta({}, input);
-  const [record] = await db
-    .insert(proxyHosts)
-    .values({
-      name: input.name.trim(),
-      domains: JSON.stringify(domains),
-      upstreams: JSON.stringify(Array.from(new Set(input.upstreams.map((u) => u.trim())))),
-      certificateId: input.certificateId ?? null,
-      accessListId: input.accessListId ?? null,
-      ownerUserId: actorUserId,
-      sslForced: input.sslForced ?? true,
-      hstsEnabled: input.hstsEnabled ?? true,
-      hstsSubdomains: input.hstsSubdomains ?? false,
-      allowWebsocket: input.allowWebsocket ?? true,
-      preserveHostHeader: input.preserveHostHeader ?? true,
-      meta,
-      skipHttpsHostnameValidation: input.skipHttpsHostnameValidation ?? false,
-      enabled: input.enabled ?? true,
-      createdAt: now,
-      updatedAt: now
-    })
-    .returning();
+  const meta = buildMeta({}, input, input.waf ? await getWafSettings() : null);
+  // The host and its WAF exclusion records are inserted together.
+  const record = await appDb.transaction(async (tx) => {
+    const [record] = await tx
+      .insert(proxyHosts)
+      .values({
+        name: input.name.trim(),
+        domains: JSON.stringify(domains),
+        upstreams: JSON.stringify(Array.from(new Set(input.upstreams.map((u) => u.trim())))),
+        certificateId: input.certificateId ?? null,
+        accessListId: input.accessListId ?? null,
+        ownerUserId: actorUserId,
+        sslForced: input.sslForced ?? true,
+        hstsEnabled: input.hstsEnabled ?? true,
+        hstsSubdomains: input.hstsSubdomains ?? false,
+        allowWebsocket: input.allowWebsocket ?? true,
+        preserveHostHeader: input.preserveHostHeader ?? true,
+        meta,
+        skipHttpsHostnameValidation: input.skipHttpsHostnameValidation ?? false,
+        enabled: input.enabled ?? true,
+        tags: serializeTags(tags),
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning();
 
-  if (!record) {
-    throw new Error("Failed to create proxy host");
-  }
+    if (!record) {
+      throw new Error("Failed to create proxy host");
+    }
 
-  logAuditEvent({
+    // The host's excluded rule ids become exclusion records (see waf-exclusions.ts).
+    const createdExclusions = input.waf?.excluded_rule_ids;
+    if (Array.isArray(createdExclusions) && createdExclusions.length > 0) {
+      await replaceWholeScopeExclusions(tx, record.id, createdExclusions, actorUserId);
+    }
+    return record;
+  });
+
+  await logAuditEvent({
     userId: actorUserId,
     action: "create",
     entityType: "proxy_host",
@@ -2104,24 +2748,35 @@ export async function createProxyHost(input: ProxyHostInput, actorUserId: number
     data: input
   });
 
-  await applyCaddyConfig();
+  try {
+    await applyCaddyConfig();
+  } catch (error) {
+    // The host is stored: say which one, so the caller can tell it was saved but is not live yet.
+    if (error instanceof CaddyApplyError) error.proxyHostId = record.id;
+    throw error;
+  }
   return (await getProxyHost(record.id))!;
 }
 
 export async function getProxyHost(id: number): Promise<ProxyHost | null> {
-  const host = await db.query.proxyHosts.findFirst({
+  const host = await appDb.query.proxyHosts.findFirst({
     where: (table, { eq }) => eq(table.id, id)
   });
   return host ? parseProxyHost(host) : null;
 }
 
-export async function updateProxyHost(id: number, input: Partial<ProxyHostInput>, actorUserId: number) {
+export async function updateProxyHost(id: number, rawInput: Partial<ProxyHostInput>, actorUserId: number) {
+  const input = resolveLegacyInputFields(rawInput);
   const existing = await getProxyHost(id);
   if (!existing) {
     throw new Error("Proxy host not found");
   }
+  await assertHostUpdateApproved("proxy_host", existing, input);
 
   const domainList = input.domains ? normalizeProxyHostDomains(input.domains) : existing.domains;
+  if (input.accessListId !== undefined && input.accessListId !== existing.accessListId) {
+    await assertAttachableAccessList(input.accessListId);
+  }
   const domains = JSON.stringify(domainList);
   if (input.upstreams) {
     input.upstreams.forEach(validateUpstreamProtocol);
@@ -2131,6 +2786,7 @@ export async function updateProxyHost(id: number, input: Partial<ProxyHostInput>
   await assertWildcardIssuable(domainList, effectiveCertificateId);
   const upstreams = input.upstreams ? JSON.stringify(Array.from(new Set(input.upstreams))) : JSON.stringify(existing.upstreams);
   const existingMeta: ProxyHostMeta = {
+    anubis_enabled: existing.anubisEnabled,
     custom_reverse_proxy_json: existing.customReverseProxyJson ?? undefined,
     custom_pre_handlers_json: existing.customPreHandlersJson ?? undefined,
     authentik: dehydrateAuthentik(existing.authentik),
@@ -2141,13 +2797,15 @@ export async function updateProxyHost(id: number, input: Partial<ProxyHostInput>
     ...(existing.geoblockMode !== "merge" ? { geoblock_mode: existing.geoblockMode } : {}),
     ...(existing.waf ? { waf: existing.waf } : {}),
     ...(existing.mtls ? { mtls: existing.mtls } : {}),
-    ...(existing.cpmForwardAuth?.enabled ? {
+    ...(existing.ingressiForwardAuth?.enabled ? {
       cpm_forward_auth: {
         enabled: true,
-        ...(existing.cpmForwardAuth.protected_paths ? { protected_paths: existing.cpmForwardAuth.protected_paths } : {}),
-        ...(existing.cpmForwardAuth.excluded_paths ? { excluded_paths: existing.cpmForwardAuth.excluded_paths } : {})
+        ...(existing.ingressiForwardAuth.protected_paths ? { protected_paths: existing.ingressiForwardAuth.protected_paths } : {}),
+        ...(existing.ingressiForwardAuth.excluded_paths ? { excluded_paths: existing.ingressiForwardAuth.excluded_paths } : {}),
+        ...(existing.ingressiForwardAuth.bypass_sources && existing.ingressiForwardAuth.bypass_sources.length > 0 ? { bypass_sources: existing.ingressiForwardAuth.bypass_sources } : {})
       }
     } : {}),
+    ...(existing.forwardAuth ? { forward_auth: dehydrateForwardAuth(existing.forwardAuth) } : {}),
     ...(existing.redirects && existing.redirects.length > 0 ? { redirects: existing.redirects } : {}),
     ...(existing.rewrite ? { rewrite: existing.rewrite } : {}),
     ...(existing.locationRules && existing.locationRules.length > 0 ? { location_rules: dehydrateLocationRules(existing.locationRules) } : {}),
@@ -2155,11 +2813,28 @@ export async function updateProxyHost(id: number, input: Partial<ProxyHostInput>
     ...(existing.pathBlocks && existing.pathBlocks.length > 0 ? { path_blocks: existing.pathBlocks } : {}),
     ...(existing.pathRewrites && existing.pathRewrites.length > 0 ? { path_rewrites: existing.pathRewrites } : {}),
     ...(existing.errorPages && existing.errorPages.length > 0 ? { error_pages: existing.errorPages } : {}),
+    ...(existing.rateLimit ? { rate_limit: existing.rateLimit } : {}),
   };
-  const meta = buildMeta(existingMeta, input);
+  const meta = buildMeta(existingMeta, input, input.waf ? await getWafSettings() : null);
+  const tags = input.tags !== undefined ? normalizeTags(input.tags) : existing.tags;
+  if (
+    input.authentik !== undefined ||
+    input.forwardAuth !== undefined ||
+    input.ingressiForwardAuth !== undefined ||
+    input.accessListId !== undefined
+  ) {
+    // API monetization is an authentication mode of its own (ee/monetization).
+    const nextMeta = parseMeta(meta);
+    await assertProxyHostAuthCompatible(id, {
+      accessListId: input.accessListId !== undefined ? input.accessListId ?? null : existing.accessListId,
+      authentik: nextMeta.authentik,
+      forwardAuth: nextMeta.forward_auth,
+      ingressiForwardAuth: nextMeta.cpm_forward_auth,
+    });
+  }
 
   const now = nowIso();
-  await db
+  await appDb
     .update(proxyHosts)
     .set({
       name: input.name ?? existing.name,
@@ -2175,11 +2850,24 @@ export async function updateProxyHost(id: number, input: Partial<ProxyHostInput>
       meta,
       skipHttpsHostnameValidation: input.skipHttpsHostnameValidation ?? existing.skipHttpsHostnameValidation,
       enabled: input.enabled ?? existing.enabled,
+      tags: serializeTags(tags),
       updatedAt: now
     })
     .where(eq(proxyHosts.id, id));
 
-  logAuditEvent({
+  // excluded_rule_ids is a view of the host's whole-host exclusion records:
+  // a list in the input replaces them (exclusions with a path or variable
+  // stay); WAF settings without one keep them, and the list is written back.
+  if (input.waf !== undefined) {
+    const excluded = input.waf?.excluded_rule_ids;
+    await appDb.transaction(async (tx) =>
+      Array.isArray(excluded)
+        ? await replaceWholeScopeExclusions(tx, id, excluded, actorUserId)
+        : await syncWafExclusionMirror(tx, id)
+    );
+  }
+
+  await logAuditEvent({
     userId: actorUserId,
     action: "update",
     entityType: "proxy_host",
@@ -2197,9 +2885,29 @@ export async function deleteProxyHost(id: number, actorUserId: number) {
   if (!existing) {
     throw new Error("Proxy host not found");
   }
+  await assertHostDeleteApproved("proxy_host", existing);
 
-  await db.delete(proxyHosts).where(eq(proxyHosts.id, id));
-  logAuditEvent({
+  // Foreign keys are not enforced (SQLite runs with them off, PostgreSQL has
+  // none): the host's mTLS path rules, forward-auth grants and forward-auth
+  // sign-in state go with it here, or they would belong to whichever host
+  // got the id next.
+  await appDb.transaction(async (tx) => {
+    await tx.delete(mtlsAccessRules).where(eq(mtlsAccessRules.proxyHostId, id));
+    await tx.delete(forwardAuthAccess).where(eq(forwardAuthAccess.proxyHostId, id));
+    await tx.delete(forwardAuthExchanges).where(eq(forwardAuthExchanges.proxyHostId, id));
+    await tx.delete(forwardAuthRedirectIntents).where(eq(forwardAuthRedirectIntents.proxyHostId, id));
+    await tx.delete(forwardAuthExchanges).where(inArray(
+      forwardAuthExchanges.sessionId,
+      tx.select({ id: forwardAuthSessions.id }).from(forwardAuthSessions).where(eq(forwardAuthSessions.proxyHostId, id))
+    ));
+    await tx.delete(forwardAuthSessions).where(eq(forwardAuthSessions.proxyHostId, id));
+    await tx.delete(proxyHosts).where(eq(proxyHosts.id, id));
+    await deleteWafExclusionsForHost(tx, id);
+  });
+  await forgetDeletedProxyHost(id);
+  // Its forward-auth sessions end on every node (shared state).
+  await revokeForwardAuthSessionsOfDeletedHosts([id]);
+  await logAuditEvent({
     userId: actorUserId,
     action: "delete",
     entityType: "proxy_host",

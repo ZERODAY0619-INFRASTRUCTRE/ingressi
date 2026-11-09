@@ -14,6 +14,7 @@ tsconfig.tsbuildinfo
 .DS_Store
 CLAUDE.local.md
 /caddy-proxy-manager.wiki
+/ingressi.wiki
 docs/plans
 /.playwright-mcp
 /.worktrees
@@ -25,6 +26,7 @@ test-results/
 playwright-report/
 /.superpowers
 /docs/superpowers
+/docs/
 .mcp.json
 
 # Staged from node_modules by scripts/copy-maplibre-worker.mjs at build time
