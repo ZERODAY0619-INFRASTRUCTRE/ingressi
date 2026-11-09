@@ -324,7 +324,7 @@ export default function WafSettingsClient({ data }: { data: WafSettingsPageData 
                   modeNote.tone === "bad" ? "border-destructive/40 bg-destructive/5" : "bg-muted/40"
                 )}
               >
-                <TriangleAlert className={cn("mt-0.5 h-4 w-4 shrink-0", modeNote.tone === "bad" ? "text-destructive" : "text-muted-foreground")} aria-hidden="true" />
+                <TriangleAlert className={cn("mt-0.5 h-4 w-4 shrink-0", modeNote.tone === "bad" ? "text-bad" : "text-muted-foreground")} aria-hidden="true" />
                 <span>
                   <span className="font-semibold">{modeNote.title}</span>
                   {modeNote.text && <span className="text-muted-foreground"> {modeNote.text}</span>}
@@ -422,7 +422,7 @@ export default function WafSettingsClient({ data }: { data: WafSettingsPageData 
                       default {DEFAULT_INBOUND_ANOMALY_THRESHOLD}
                     </span>
                   </div>
-                  <span id="waf-th-in-help" className={cn("text-xs", fieldErrors.inbound ? "text-destructive" : "text-muted-foreground")}>
+                  <span id="waf-th-in-help" className={cn("text-xs", fieldErrors.inbound ? "text-bad" : "text-muted-foreground")}>
                     {fieldErrors.inbound ?? "At 5, one critical match is enough. Lower blocks more."}
                   </span>
                 </div>
@@ -442,7 +442,7 @@ export default function WafSettingsClient({ data }: { data: WafSettingsPageData 
                       default {DEFAULT_OUTBOUND_ANOMALY_THRESHOLD}
                     </span>
                   </div>
-                  <span id="waf-th-out-help" className={cn("text-xs", fieldErrors.outbound ? "text-destructive" : "text-muted-foreground")}>
+                  <span id="waf-th-out-help" className={cn("text-xs", fieldErrors.outbound ? "text-bad" : "text-muted-foreground")}>
                     {fieldErrors.outbound ?? "For responses that leak SQL errors or stack traces."}
                   </span>
                 </div>
@@ -487,7 +487,7 @@ export default function WafSettingsClient({ data }: { data: WafSettingsPageData 
                   />
                   <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">MiB</span>
                 </div>
-                {fieldErrors.bodyLimit && <span className="text-xs text-destructive">{fieldErrors.bodyLimit}</span>}
+                {fieldErrors.bodyLimit && <span className="text-xs text-bad">{fieldErrors.bodyLimit}</span>}
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="waf-body-mem" className="font-semibold">Kept in memory</Label>
@@ -503,7 +503,7 @@ export default function WafSettingsClient({ data }: { data: WafSettingsPageData 
                   />
                   <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">MiB</span>
                 </div>
-                {fieldErrors.bodyMemory && <span className="text-xs text-destructive">{fieldErrors.bodyMemory}</span>}
+                {fieldErrors.bodyMemory && <span className="text-xs text-bad">{fieldErrors.bodyMemory}</span>}
               </div>
               <div className="flex flex-col gap-1.5">
                 <span id="waf-body-action" className="font-semibold">Over the limit</span>

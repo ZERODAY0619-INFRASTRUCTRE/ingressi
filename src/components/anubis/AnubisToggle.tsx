@@ -71,7 +71,7 @@ export function AnubisToggle({ initial, host, compact = false }: { initial?: Anu
         <span aria-hidden="true" className={effective ? "size-1.5 rounded-full bg-brand" : "size-1.5 rounded-full bg-soft/50"} />
         Anubis <span className={effective ? "text-foreground" : "text-soft"}>{pending ? "Applying…" : effective ? "On" : "Off"}</span>
       </button> : <span className="text-xs text-soft" title={note}>Anubis unavailable</span>}
-      {error && <span role="alert" className="max-w-56 text-xs text-destructive">{error}</span>}
+      {error && <span role="alert" className="max-w-56 text-xs text-bad">{error}</span>}
     </span>;
   }
 

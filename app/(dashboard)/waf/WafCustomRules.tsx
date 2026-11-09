@@ -94,7 +94,7 @@ export function WafCustomRules({
         <ul className="flex flex-col gap-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 font-mono text-xs">
           {dropped.map((line, index) => (
             <li key={`${index}-${line.line}`} className="break-all">
-              <span className="text-foreground">{line.line}</span> <span className={cn("text-destructive")}>→ {line.reason}</span>
+              <span className="text-foreground">{line.line}</span> <span className={cn("text-bad")}>→ {line.reason}</span>
             </li>
           ))}
         </ul>

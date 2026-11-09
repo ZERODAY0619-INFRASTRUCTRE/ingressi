@@ -94,7 +94,7 @@ export function DeleteHostDialog({
                 <p className="text-sm">
                     <strong>{host.name}</strong> stops serving <span className="num [overflow-wrap:anywhere]">{host.domains.join(", ")}</span>.
                 </p>
-                <p className="text-sm text-destructive font-medium">
+                <p className="text-sm text-bad font-medium">
                     This cannot be undone.
                 </p>
                 <ProtectedChangeNotice approval={approval} targetType="proxy_host" tags={host.tags} operations={["delete"]} />

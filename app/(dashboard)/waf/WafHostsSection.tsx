@@ -185,7 +185,7 @@ export function WafHostsSection({
                   <Link
                     href={`/proxy-hosts/${host.id}#waf`}
                     aria-label={`Edit WAF settings for ${host.name}`}
-                    className="text-sm text-primary hover:underline"
+                    className="text-sm text-brand hover:underline"
                   >
                     Edit
                   </Link>

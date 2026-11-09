@@ -188,7 +188,7 @@ export function WafExclusionBatchDialog({
                           )}
                         </div>
                         {issue && (
-                          <p role="alert" className="m-0 text-xs text-destructive">
+                          <p role="alert" className="m-0 text-xs text-bad">
                             {issue}
                           </p>
                         )}
@@ -259,13 +259,13 @@ export function WafExclusionBatchDialog({
                 onChange={(event) => setReason(event.target.value.replace(/\n/g, " "))}
               />
               {submitted && reasonIssue && (
-                <p role="alert" className="m-0 text-xs text-destructive">
+                <p role="alert" className="m-0 text-xs text-bad">
                   {reasonIssue}
                 </p>
               )}
             </div>
             {error && (
-              <p role="alert" className="m-0 text-sm text-destructive">
+              <p role="alert" className="m-0 text-sm text-bad">
                 {error}
               </p>
             )}

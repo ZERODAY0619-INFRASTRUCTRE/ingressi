@@ -36,7 +36,7 @@ export function WafRulesStopped({ week, analyticsEnabled }: { week: WafSettingsP
       <div className="flex flex-col gap-0.5 px-4 pb-3 pt-3.5">
         <div className="flex items-center gap-2.5">
           <h2 id="waf-stopped-title" className="text-base font-semibold">What the rules stopped</h2>
-          <Link href="/security?range=7d&kind=waf" className="ml-auto text-sm text-primary hover:underline">Events</Link>
+          <Link href="/security?range=7d&kind=waf" className="ml-auto text-sm text-brand hover:underline">Events</Link>
         </div>
         <span className="text-sm text-muted-foreground">
           {analyticsEnabled

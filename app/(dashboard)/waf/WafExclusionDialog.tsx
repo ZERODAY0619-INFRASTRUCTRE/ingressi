@@ -244,7 +244,7 @@ export function WafExclusionDialog({
             />
           </div>
           {formError && !pathMessage && (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-bad">
               {formError}
             </p>
           )}

@@ -121,7 +121,7 @@ export default function TokensSection({
             more than your role.
           </span>
         </div>
-        <a href="/api-docs" className="shrink-0 text-sm text-primary underline-offset-4 hover:underline">API reference</a>
+        <a href="/api-docs" className="shrink-0 text-sm text-brand underline-offset-4 hover:underline">API reference</a>
       </div>
 
       {created && (
@@ -211,7 +211,7 @@ export default function TokensSection({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="text-destructive"
+                        className="text-bad"
                         onClick={() => revoke(token)}
                         disabled={pending}
                         aria-label={`${expired ? "Delete" : "Revoke"} ${token.name}`}

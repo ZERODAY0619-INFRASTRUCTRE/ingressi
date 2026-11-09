@@ -158,7 +158,7 @@ function Summary({
         {postpaid ? (
           <div className="rounded-lg border p-4">
             <p className="text-xs text-muted-foreground">Unpaid usage</p>
-            <p className={`text-2xl font-semibold ${postpaid.state === "suspended" ? "text-destructive" : ""}`}>
+            <p className={`text-2xl font-semibold ${postpaid.state === "suspended" ? "text-bad" : ""}`}>
               {formatMicros(postpaid.openAmountMicros, currency)}
             </p>
             <p className="text-xs text-muted-foreground">Limit {formatMicros(postpaid.capMicros, currency)}</p>
@@ -166,7 +166,7 @@ function Summary({
         ) : (
           <div className="rounded-lg border p-4">
             <p className="text-xs text-muted-foreground">Balance</p>
-            <p className={`text-2xl font-semibold ${low ? "text-destructive" : ""}`}>{formatMicros(summary.balanceMicros, currency)}</p>
+            <p className={`text-2xl font-semibold ${low ? "text-bad" : ""}`}>{formatMicros(summary.balanceMicros, currency)}</p>
             {summary.overdraftAllowanceMicros > 0 && (
               <p className="text-xs text-muted-foreground">May go down to -{formatMicros(summary.overdraftAllowanceMicros, currency)}</p>
             )}

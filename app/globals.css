@@ -268,18 +268,28 @@
   --radius: 6px;
 }
 .dark {
-  --ground: #1f1f1f; --panel: #292929; --panel2: #333333; --raise: #3d3d3d;
-  --line: #424242; --line2: #707070; --text: #ffffff; --foreground: #ffffff;
-  --soft: #d6d6d6; --brand: #479ef5; --brand-fill: #115ea3;
-  --on-brand-fill: #ffffff; --brand-tint: #082338;
+  --ground: #20242b; --panel: #292e37; --panel2: #303641; --raise: #3b4350;
+  --line: #414a58; --line2: #78869b; --text: #edf1f7; --foreground: #edf1f7;
+  --soft: #bbc5d4; --brand: #b9d4f3; --brand-fill: #b9d4f3;
+  --on-brand-fill: #20344b; --brand-tint: #344458;
+  --served: #a9c9ed; --served2: #cbdcf4; --waf: #e6b89c; --waf-ink: #e6b89c;
+  --access: #e7c7aa; --rl: #ead9ad; --err5: #e6aeb8; --err4: #aebaca;
+  --ok: #aed8c1; --ok-tint: #30493f; --warn: #ead3a3; --warn-tint: #4b4435;
+  --bad: #e6aeb8; --bad-tint: #4d3941; --on-bad: #402631;
+  --destructive: #e6aeb8; --destructive-foreground: #402631;
   --fluent-shadow: 0 2px 4px #00000024, 0 0 2px #0000001f;
 }
 .light {
-  --ground: #f5f5f5; --panel: #ffffff; --panel2: #fafafa; --raise: #f0f0f0;
-  --line: #e0e0e0; --line2: #b3b3b3; --text: #242424; --foreground: #242424;
-  --soft: #616161; --brand: #0f6cbd; --brand-fill: #0f6cbd;
-  --on-brand-fill: #ffffff; --brand-tint: #ebf3fc;
-  --fluent-shadow: 0 2px 4px #00000014, 0 0 2px #0000001f;
+  --ground: #f7f8fc; --panel: #ffffff; --panel2: #f0f3f9; --raise: #e7edf6;
+  --line: #dce3ee; --line2: #9aaac0; --text: #293548; --foreground: #293548;
+  --soft: #57677c; --brand: #365a7a; --brand-fill: #b9d4f3;
+  --on-brand-fill: #20344b; --brand-tint: #e8f0fb;
+  --served: #7d9fc4; --served2: #b9d4f3; --waf: #c99a7a; --waf-ink: #805335;
+  --access: #d5b397; --rl: #d5be8d; --err5: #c58e9b; --err4: #9baabd;
+  --ok: #396b54; --ok-tint: #e5f3eb; --warn: #785b2e; --warn-tint: #fbf1dc;
+  --bad: #8a4256; --bad-tint: #fae9ee; --on-bad: #ffffff;
+  --destructive: #e6aeb8; --destructive-foreground: #402631;
+  --fluent-shadow: 0 2px 4px #24354b0d, 0 0 2px #24354b14;
 }
 body { font-family: var(--font-sans); }
 h1, h2, h3 { font-family: var(--font-sans); letter-spacing: -0.02em; }

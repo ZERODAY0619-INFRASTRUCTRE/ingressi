@@ -108,7 +108,7 @@ export function DeleteL4HostDialog({
             <span className="font-mono text-xs">{host.upstreams.join(", ")}</span>
           </div>
         </div>
-        <p className="text-sm text-destructive font-medium">
+        <p className="text-sm text-bad font-medium">
           This cannot be undone.
         </p>
         <ProtectedChangeNotice approval={approval} targetType="l4_proxy_host" tags={host.tags} operations={["delete"]} />

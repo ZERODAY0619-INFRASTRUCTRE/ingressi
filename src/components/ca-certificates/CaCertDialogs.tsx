@@ -161,7 +161,7 @@ export function IssueClientCertDialog({
               <Switch id="compatibility_mode" name="compatibility_mode" defaultChecked />
               <Label htmlFor="compatibility_mode">Compatibility mode (3DES)</Label>
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && <p className="text-sm text-bad">{error}</p>}
           </div>
         </form>
       )}
@@ -223,7 +223,7 @@ export function DeleteCaCertDialog({
           A certificate authority cannot be deleted while a proxy host&apos;s mutual TLS trusts it, one of its client
           certificates or a role holding one: change those hosts first.
         </p>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <p className="text-sm text-bad">{error}</p>}
       </div>
     </AppDialog>
   );

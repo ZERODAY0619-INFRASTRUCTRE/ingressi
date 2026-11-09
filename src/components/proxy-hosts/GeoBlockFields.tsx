@@ -455,7 +455,7 @@ function ResponseHeadersEditor({ initialHeaders }: { initialHeaders: Record<stri
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-destructive hover:text-destructive shrink-0"
+                className="h-8 w-8 text-bad hover:text-bad shrink-0"
                 onClick={() => setRows((prev) => prev.filter((_, j) => j !== i))}
                 title="Remove"
               >
