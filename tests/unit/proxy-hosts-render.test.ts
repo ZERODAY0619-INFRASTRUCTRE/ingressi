@@ -173,7 +173,8 @@ describe('proxy hosts list', () => {
     expect(html).toContain('12,147');
     expect(html).toContain('5.2%');
     expect(html).toContain('WAF · Block');
-    expect(html).toContain('60 days');
+    expect(html).toContain('Expires 2 Dec 2026');
+    expect(html).not.toContain('60 days');
     expect(html).toContain('renewing now');
     expect(html).toContain('Automatic');
     expect(html).toContain('aria-label="More actions for tv.example.com"');

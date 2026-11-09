@@ -27,3 +27,10 @@ test("an opted-out host stays unchecked even when global protection is on", () =
   const html = renderToStaticMarkup(<AnubisToggle initial={status} host={{ ...host, anubisEnabled: false }} />);
   expect(html).toContain('aria-checked="false"'); expect(html).toContain("Protection off");
 });
+
+test("compact host actions report effective protection when globally paused", () => {
+  const html = renderToStaticMarkup(<AnubisToggle compact initial={{ ...status, enabled: false }} host={host} />);
+  expect(html).toContain('aria-pressed="false"');
+  expect(html).toContain("Paused — global protection is off");
+  expect(html).not.toContain('role="switch"');
+});
