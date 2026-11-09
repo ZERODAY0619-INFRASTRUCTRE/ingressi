@@ -98,7 +98,7 @@ export function AnubisSettings() {
         </div>
       </form>
     </FormCard>
-    <Alert className="border-blue-500/30 bg-blue-500/5 text-blue-700 dark:text-blue-400 [&>svg]:text-blue-500">
+    <Alert className="border-brand/30 bg-brand-tint text-brand [&>svg]:text-brand">
       <AlertDescription>Saving briefly restarts Anubis to apply these settings. Proxy host choices are preserved.</AlertDescription>
     </Alert>
   </div>;

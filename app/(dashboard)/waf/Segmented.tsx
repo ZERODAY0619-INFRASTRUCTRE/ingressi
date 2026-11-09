@@ -42,8 +42,8 @@ export function Segmented({
             disabled={disabled}
             onClick={() => onChange(option.value)}
             className={cn(
-              "flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-md px-3 text-sm transition-colors disabled:cursor-not-allowed",
-              checked ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
+              "flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-md px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed",
+              checked ? "bg-brand-tint font-semibold text-brand ring-1 ring-inset ring-brand/30" : "text-muted-foreground hover:text-foreground"
             )}
           >
             {option.label}

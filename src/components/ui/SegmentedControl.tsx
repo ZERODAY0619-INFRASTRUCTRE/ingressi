@@ -70,7 +70,7 @@ export function SegmentedControl<T extends string = string>({
               "disabled:cursor-not-allowed disabled:opacity-45",
               size === "sm" ? "h-[26px] rounded px-2.5" : "h-[30px] rounded px-3",
               mono && "num",
-              pressed ? "bg-raise font-medium text-foreground shadow-sm" : "bg-transparent text-muted-foreground hover:text-foreground"
+              pressed ? "bg-brand-tint font-semibold text-brand shadow-sm ring-1 ring-inset ring-brand/30" : "bg-transparent text-muted-foreground hover:text-foreground"
             )}
           >
             {option.label}

@@ -78,7 +78,7 @@ describe('SegmentedControl', () => {
     );
     expect(html).toContain('role="group" aria-label="Time range"');
     expect(html).toMatch(/<button type="button" aria-pressed="false"[^>]*>1h<\/button>/);
-    expect(html).toMatch(/<button type="button" aria-pressed="true"[^>]*bg-raise[^>]*>24h<\/button>/);
+    expect(html).toMatch(/<button type="button" aria-pressed="true"[^>]*bg-brand-tint[^>]*>24h<\/button>/);
     expect(html).toMatch(/<button type="button" aria-pressed="false" disabled=""[^>]*>7d<\/button>/);
   });
 });
