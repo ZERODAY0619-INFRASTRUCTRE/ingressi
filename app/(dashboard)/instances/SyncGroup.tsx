@@ -283,7 +283,7 @@ function ReplicasCard({ master, canWrite }: { master: NonNullable<InstanceSyncPr
 
       {master.envInstances.length > 0 && (
         <div className="flex flex-col">
-          <p className="m-0 px-5 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-soft">Set in INSTANCE_SLAVES</p>
+          <p className="m-0 px-5 pb-1 pt-3 text-[11px] font-semibold tracking-normal text-soft">Set in INSTANCE_SLAVES</p>
           <ul className="m-0 list-none divide-y divide-line p-0">
             {master.envInstances.map((instance, index) => (
               <li key={`env-${index}`} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
@@ -317,7 +317,7 @@ function ReplicasCard({ master, canWrite }: { master: NonNullable<InstanceSyncPr
       {master.instances.length > 0 && (
         <div className="flex flex-col">
           {master.envInstances.length > 0 && (
-            <p className="m-0 border-t border-line px-5 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-soft">
+            <p className="m-0 border-t border-line px-5 pb-1 pt-3 text-[11px] font-semibold tracking-normal text-soft">
               Added here
             </p>
           )}
@@ -375,7 +375,7 @@ function ReplicasCard({ master, canWrite }: { master: NonNullable<InstanceSyncPr
 
       {master.orphanSyncKeyPins.length > 0 && (
         <div className="flex flex-col border-t border-line">
-          <p className="m-0 px-5 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-soft">Key pins without a replica</p>
+          <p className="m-0 px-5 pb-1 pt-3 text-[11px] font-semibold tracking-normal text-soft">Key pins without a replica</p>
           <p className="m-0 px-5 pb-2 text-xs text-muted-foreground">A replica added at one of these URLs inherits its pin.</p>
           <ul className="m-0 list-none divide-y divide-line p-0">
             {master.orphanSyncKeyPins.map((pin) => (

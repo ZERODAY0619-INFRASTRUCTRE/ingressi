@@ -260,8 +260,50 @@
   display: none;
 }
 
-/* TOMORI retains its local typography and accent on the expanded upstream screens. */
-:root { --eva-display: "TOMORI Display", "Arial Narrow", Arial, sans-serif; --eva-mono: "TOMORI Mono", Consolas, monospace; }
-.dark { --ground: #0b090b; --panel: #140e0f; --panel2: #241214; --raise: #341518; --line: #743338; --line2: #ba5b61; --foreground: #f3ece2; --soft: #c5b7b1; --brand: #ff8589; --brand-fill: #f05252; --on-brand-fill: #0b090b; --brand-tint: #341518; --radius: 0px; }
-.light { --brand: #a42632; --brand-fill: #a42632; --on-brand-fill: #ffffff; --brand-tint: #fbe8e9; --radius: 0px; }
-h1, h2, h3 { font-family: var(--eva-display); }
+/* Fluent 2 semantic tokens keep custom and upstream screens on one palette. */
+:root {
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --eva-display: var(--font-sans);
+  --eva-mono: "Cascadia Code", Consolas, monospace;
+  --radius: 6px;
+}
+.dark {
+  --ground: #1f1f1f; --panel: #292929; --panel2: #333333; --raise: #3d3d3d;
+  --line: #424242; --line2: #707070; --text: #ffffff; --foreground: #ffffff;
+  --soft: #d6d6d6; --brand: #479ef5; --brand-fill: #115ea3;
+  --on-brand-fill: #ffffff; --brand-tint: #082338;
+  --fluent-shadow: 0 2px 4px #00000024, 0 0 2px #0000001f;
+}
+.light {
+  --ground: #f5f5f5; --panel: #ffffff; --panel2: #fafafa; --raise: #f0f0f0;
+  --line: #e0e0e0; --line2: #b3b3b3; --text: #242424; --foreground: #242424;
+  --soft: #616161; --brand: #0f6cbd; --brand-fill: #0f6cbd;
+  --on-brand-fill: #ffffff; --brand-tint: #ebf3fc;
+  --fluent-shadow: 0 2px 4px #00000014, 0 0 2px #0000001f;
+}
+body { font-family: var(--font-sans); }
+h1, h2, h3 { font-family: var(--font-sans); letter-spacing: -0.02em; }
+h1 { font-weight: 600; }
+button, input, select, textarea { font-family: inherit; }
+button, a, input, select, textarea { transition-duration: 120ms; }
+[role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper] > * {
+  border-radius: 8px; box-shadow: 0 8px 32px #00000026, 0 0 2px #0000001f;
+}
+input:not([type="checkbox"]):not([type="radio"]), textarea, select {
+  border-radius: 4px; border-bottom-color: var(--soft);
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  border-bottom-color: var(--brand); box-shadow: inset 0 -2px var(--brand);
+}
+[role="tablist"] { border-radius: 6px; background: var(--panel2); }
+[role="tab"] { border-radius: 4px; font-weight: 600; }
+[role="tab"][data-state="active"] { background: var(--panel); box-shadow: inset 0 -2px var(--brand); }
+[role="menuitem"], [role="option"] { border-radius: 4px; }
+nav a[aria-current="page"] { background: var(--brand-tint); color: var(--brand); box-shadow: inset 3px 0 var(--brand); }
+table thead { background: var(--panel2); }
+table th { font-weight: 600; }
+table tbody tr:hover { background: var(--raise); }
+::selection { background: var(--brand-tint); color: var(--text); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
