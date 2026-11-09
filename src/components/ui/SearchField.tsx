@@ -26,7 +26,7 @@ export function SearchField({ className, ...props }: SearchFieldProps) {
       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
       <Input
         placeholder="Search..."
-        className="pl-9 rounded-sm h-11 bg-card"
+        className="pl-9 rounded-md h-9 bg-card"
         {...props}
       />
     </div>

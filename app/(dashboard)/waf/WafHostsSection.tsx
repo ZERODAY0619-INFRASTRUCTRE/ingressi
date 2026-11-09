@@ -142,8 +142,8 @@ export function WafHostsSection({
                 <td className="whitespace-nowrap px-2.5 py-2.5">
                   {canWrite ? (
                     <Select value={host.mode} onValueChange={(value) => changeMode(host, value as WafHostMode)} disabled={pending}>
-                      <SelectTrigger className="h-8 w-[220px]" aria-label={`WAF mode of ${host.name}`}>
-                        <span className="flex items-center gap-2">
+                      <SelectTrigger className="h-8 w-56 max-w-full" aria-label={`WAF mode of ${host.name}`}>
+                        <span className="flex min-w-0 items-center gap-2">
                           <ToneDot tone={EFFECTIVE_MODE_TONES[host.effectiveMode]} />
                           <SelectValue />
                         </span>

@@ -48,8 +48,8 @@ export function SegmentedControl<T extends string = string>({
       role="group"
       aria-label={label}
       className={cn(
-        "inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-[10px] border border-line bg-panel p-[3px] scrollbar-none",
-        size === "sm" && "rounded-[9px]",
+        "inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-line bg-panel p-[3px] scrollbar-none",
+        size === "sm" && "rounded-md",
         className
       )}
     >
@@ -66,11 +66,11 @@ export function SegmentedControl<T extends string = string>({
               if (!pressed) onChange(option.value);
             }}
             className={cn(
-              "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap border-0 text-[13px] transition-colors",
+              "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap border-0 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
               "disabled:cursor-not-allowed disabled:opacity-45",
-              size === "sm" ? "h-[26px] rounded-[6px] px-2.5" : "h-[30px] rounded-[7px] px-3",
+              size === "sm" ? "h-[26px] rounded px-2.5" : "h-[30px] rounded px-3",
               mono && "num",
-              pressed ? "bg-raise text-foreground" : "bg-transparent text-muted-foreground hover:text-foreground"
+              pressed ? "bg-raise font-medium text-foreground shadow-sm" : "bg-transparent text-muted-foreground hover:text-foreground"
             )}
           >
             {option.label}
