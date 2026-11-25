@@ -161,7 +161,7 @@ function BlockDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
               />
             </div>
           </div>
-          <span id="block-values-hint" className={cn("-mt-2 text-xs", parsed.errors.length > 0 ? "text-destructive" : "text-muted-foreground")}>
+          <span id="block-values-hint" className={cn("-mt-2 text-xs", parsed.errors.length > 0 ? "text-bad" : "text-muted-foreground")}>
             {parsed.errors[0] ?? option.hint}
           </span>
           <div className="flex flex-col gap-1.5">

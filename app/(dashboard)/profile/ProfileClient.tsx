@@ -331,7 +331,7 @@ export default function ProfileClient({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-destructive"
+                    className="text-bad"
                     onClick={() => void uploadAvatar(null, "Picture removed. Refreshing…")}
                     disabled={loading}
                   >

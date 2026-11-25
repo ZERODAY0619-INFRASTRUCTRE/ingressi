@@ -30,16 +30,17 @@ export type WafSettingsPageData = {
 const fmt = (value: number) => value.toLocaleString("en-US");
 const plural = (count: number, word: string) => `${fmt(count)} ${word}${count === 1 ? "" : "s"}`;
 
-export function ToneDot({ tone, className }: { tone: "ok" | "warn" | "bad"; className?: string }) {
+export function ToneDot({ tone, className }: { tone: "ok" | "warn" | "bad" | "off"; className?: string }) {
   return (
     <span
       aria-hidden="true"
       data-tone={tone}
       className={cn(
         "inline-block h-2 w-2 shrink-0 rounded-full",
-        tone === "ok" && "bg-primary",
-        tone === "warn" && "bg-muted-foreground",
+        tone === "ok" && "bg-ok",
+        tone === "warn" && "bg-warn",
         tone === "bad" && "bg-destructive",
+        tone === "off" && "bg-soft",
         className
       )}
     />
@@ -51,10 +52,10 @@ export const EFFECTIVE_MODE_LABELS: Record<WafHostView["effectiveMode"], string>
   detection_only: "Detection only",
   off: "Off",
 };
-export const EFFECTIVE_MODE_TONES: Record<WafHostView["effectiveMode"], "ok" | "warn" | "bad"> = {
+export const EFFECTIVE_MODE_TONES: Record<WafHostView["effectiveMode"], "ok" | "warn" | "bad" | "off"> = {
   block: "ok",
   detection_only: "warn",
-  off: "bad",
+  off: "off",
 };
 
 /** Hosts per effective mode, as "Blocking on 7 hosts, detection only on 1 host". */

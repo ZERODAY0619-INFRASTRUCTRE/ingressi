@@ -309,6 +309,21 @@ describe('chart reading', () => {
 });
 
 describe('StackedAreaChart', () => {
+  it('keeps zero-count upper series in the legend without covering real traffic', () => {
+    const html = renderToStaticMarkup(createElement(StackedAreaChart, {
+      title: 'Traffic', buckets,
+      series: [
+        { key: 'served', label: 'Served', color: 'var(--served)', values: [10, 20, 30] },
+        { key: 'blocked', label: 'Blocked', color: 'var(--waf)', values: [0, 0, 0] },
+      ],
+    }));
+    expect(html).toContain('data-series="served"');
+    expect(html).not.toContain('data-series="blocked"');
+    expect(html).toContain('Blocked');
+    expect(html).toContain('<td>0</td>');
+    expect(html.match(/vector-effect="non-scaling-stroke"/g)).toHaveLength(1);
+  });
+
   it('draws one stacked area and line per visible series and the same table', () => {
     const html = renderToStaticMarkup(createElement(StackedAreaChart, { title: 'Traffic, last 24 hours', buckets, series }));
     expect(html).toContain('data-testid="chart-areas"');

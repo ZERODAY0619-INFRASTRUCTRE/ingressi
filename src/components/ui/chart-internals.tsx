@@ -513,6 +513,8 @@ function AreaLayers({ series, n, yMax }: { series: readonly ChartSeries[]; n: nu
   const y = (v: number) => Math.max(0, 100 - (v / yMax) * 100).toFixed(2);
   const base = new Array<number>(n).fill(0);
   const layers = series.map((s, index) => {
+    // Empty upper layers must not paint a differently colored line over real traffic.
+    const hasValues = s.values.some((_, bucket) => valueAt(s.values, bucket) > 0);
     const lower = base.slice();
     const upper = lower.map((b, i) => b + valueAt(s.values, i));
     for (let i = 0; i < n; i++) base[i] = upper[i];
@@ -522,7 +524,7 @@ function AreaLayers({ series, n, yMax }: { series: readonly ChartSeries[]; n: nu
       .reverse()
       .map(({ v, i }) => `L${x(i)} ${y(v)}`)
       .join(" ");
-    return { key: s.key, color: s.color, opacity: s.fillOpacity ?? (index === 0 ? 0.22 : 0.55), area: `${top} ${bottom} Z`, line: top };
+    return { key: s.key, color: s.color, hasValues, opacity: s.fillOpacity ?? (index === 0 ? 0.22 : 0.55), area: `${top} ${bottom} Z`, line: top };
   });
   return (
     <svg
@@ -532,11 +534,11 @@ function AreaLayers({ series, n, yMax }: { series: readonly ChartSeries[]; n: nu
       className="absolute inset-0 size-full overflow-visible"
       data-testid="chart-areas"
     >
-      {layers.map((l) => (
+      {layers.filter(layer => layer.hasValues).map((l) => (
         <path key={`a-${l.key}`} data-series={l.key} d={l.area} style={{ fill: l.color, fillOpacity: l.opacity }} />
       ))}
-      {layers.map((l) => (
-        <path key={`l-${l.key}`} d={l.line} vectorEffect="non-scaling-stroke" style={{ fill: "none", stroke: l.color, strokeWidth: 1.5, strokeLinejoin: "round" }} />
+      {layers.filter(layer => layer.hasValues).map((l) => (
+        <path key={`l-${l.key}`} d={l.line} vectorEffect="non-scaling-stroke" style={{ fill: "none", stroke: `color-mix(in srgb, ${l.color} var(--chart-line-strength, 100%), var(--foreground))`, strokeWidth: 1.5, strokeLinejoin: "round" }} />
       ))}
     </svg>
   );

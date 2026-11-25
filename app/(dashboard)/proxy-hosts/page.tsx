@@ -1,3 +1,4 @@
+import { getAnubisStatus } from "@/src/lib/anubis-settings";
 import ProxyHostsClient from "./ProxyHostsClient";
 import { listProxyHosts, type ProxyHost } from "@/src/lib/models/proxy-hosts";
 import { listCertificates } from "@/src/lib/models/certificates";
@@ -124,6 +125,7 @@ export default async function ProxyHostsPage({ searchParams }: PageProps) {
 
   return (
     <ProxyHostsClient
+      anubis={await getAnubisStatus()}
       hosts={hosts}
       rows={pageRows}
       totalHosts={allHosts.length}

@@ -87,7 +87,8 @@ export function RequestLog({
           {mitigatedOnly ? "No mitigated requests match the filters in this period." : "No requests match the filters in this period."}
         </p>
       ) : (
-        <div className={cn("overflow-x-auto", loading && "opacity-70")} aria-busy={loading}>
+        <div className={cn("relative overflow-x-auto", loading && "opacity-70")} aria-busy={loading}>
+          {/* Absolute screen-reader labels must remain inside the table scroll boundary. */}
           {/* Fixed columns: a long path is cut short instead of pushing Status and Source off to the right. */}
           <table className="w-full min-w-[920px] table-fixed border-collapse text-[13px]">
             <colgroup>

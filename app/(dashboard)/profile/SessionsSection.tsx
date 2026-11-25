@@ -71,7 +71,7 @@ export default function SessionsSection({ sessions }: { sessions: SessionView[] 
           <span className="text-sm text-muted-foreground">Sign out any you do not recognise.</span>
         </div>
         {others.length > 0 && (
-          <Button variant="outline" size="sm" className="shrink-0 text-destructive" onClick={signOutOthers} disabled={pending}>
+          <Button variant="outline" size="sm" className="shrink-0 text-bad" onClick={signOutOthers} disabled={pending}>
             Sign out all other sessions
           </Button>
         )}

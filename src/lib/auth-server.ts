@@ -43,6 +43,7 @@ import { PASSKEY_DISABLED_PATHS, PASSKEY_SIGN_IN_PATH, createPasskeyPlugin, pass
 import { completedSignIn, noteFirstSignInStep, recordSignIn, type SignInMethod } from "./sign-in-activity";
 import { setSessionSignInMethod } from "./models/sessions";
 import { first } from "@/src/lib/db/ops";
+import { syncOAuthRoleFromClaims } from "./services/oauth-role-sync";
 
 /** The enabled OAuth/OIDC providers, as Better Auth is built with them. */
 type LoadedProviders = {
@@ -533,6 +534,7 @@ function createAuth(providers: LoadedProviders): any {
               // Bookkeeping only — never break authentication over it.
               console.warn("[auth-server] Failed to backfill accounts.issuer:", e);
             }
+            await syncOAuthRoleFromClaims(account);
             // Better Auth writes federated identities to the `accounts` table
             // only. Re-derive the informational users.provider/subject columns
             // from it so auto-linking, profile linking, and federated sign-up
@@ -568,6 +570,7 @@ function createAuth(providers: LoadedProviders): any {
             return { data };
           },
           after: async (account) => {
+            await syncOAuthRoleFromClaims(account);
             // Repeat OAuth sign-ins update the existing account row rather than
             // creating one; keep the projection fresh in that path too.
             try {

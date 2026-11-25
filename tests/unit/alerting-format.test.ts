@@ -51,7 +51,7 @@ describe('Slack', () => {
 
   it('marks resolved and test notifications', () => {
     expect(buildSlackPayload(notification({ kind: 'resolved', title: 'Resolved: x' })).text).toMatch(/^:white_check_mark: \*\[RESOLVED\] Resolved: x\*/);
-    expect(buildSlackPayload(testNotification(new Date('2026-10-02T10:00:00Z'))).text).toMatch(/^:wave: \*\[TEST\] Test notification from Ingressi\*/);
+    expect(buildSlackPayload(testNotification(new Date('2026-10-02T10:00:00Z'))).text).toMatch(/^:wave: \*\[TEST\] Test notification from TOMORI\*/);
   });
 });
 
@@ -77,7 +77,7 @@ describe('webhook', () => {
     const body = buildWebhookBody(notification({ explanation: 'Renew it.' }));
     expect(body).toEqual({
       version: 1,
-      source: 'ingressi',
+      source: 'tomori',
       status: 'firing',
       severity: 'warning',
       rule: { id: 7, name: 'Certificates', type: 'cert_expiring' },
@@ -109,7 +109,7 @@ describe('PagerDuty', () => {
       dedup_key: pagerDutyDedupKey(7, 'certificate:3'),
       payload: {
         summary: 'Certificate "shop" expires in 5 days (on 2026-10-07)',
-        source: 'Ingressi',
+        source: 'TOMORI',
         severity: 'critical',
         component: 'certificate:3',
         group: 'Certificates',
@@ -125,7 +125,7 @@ describe('PagerDuty', () => {
   it('keeps dedup keys distinct per rule and subject and within PagerDuty limits', () => {
     const key = pagerDutyDedupKey(7, 'upstream:' + 'a'.repeat(500));
     expect(key.length).toBeLessThanOrEqual(255);
-    expect(key).toMatch(/^ingressi-7-[0-9a-f]{24}$/);
+    expect(key).toMatch(/^tomori-7-[0-9a-f]{24}$/);
     expect(pagerDutyDedupKey(7, 'certificate:3')).not.toBe(pagerDutyDedupKey(8, 'certificate:3'));
     expect(pagerDutyDedupKey(7, 'certificate:3')).not.toBe(pagerDutyDedupKey(7, 'certificate:4'));
   });
@@ -141,7 +141,7 @@ describe('ntfy', () => {
 describe('e-mail', () => {
   it('escapes HTML, keeps the subject on one line and labels the explanation', () => {
     const email = buildEmail(notification({ title: 'Bad\r\nBcc: victim@example.com <b>', message: '<script>alert(1)</script>', explanation: 'Do <this>.' }));
-    expect(email.subject).toBe('[Ingressi] [FIRING] Bad Bcc: victim@example.com <b>');
+    expect(email.subject).toBe('[TOMORI] [FIRING] Bad Bcc: victim@example.com <b>');
     expect(email.subject).not.toMatch(/[\r\n]/);
     expect(email.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(email.html).not.toContain('<script>');
@@ -158,6 +158,6 @@ describe('plain text', () => {
     const body = plainTextBody(notification());
     expect(body).toContain('Rule: Certificates');
     expect(body).toContain('Time: 2026-10-02T10:00:00.000Z');
-    expect(body.endsWith('Sent by Ingressi')).toBe(true);
+    expect(body.endsWith('Sent by TOMORI')).toBe(true);
   });
 });

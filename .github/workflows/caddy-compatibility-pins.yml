@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   update:
+    # Retained at the upstream path for build-contract tests. Enable deliberately in the fork.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

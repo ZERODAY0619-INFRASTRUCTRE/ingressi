@@ -4,31 +4,29 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
-/**
- * Buttons of the redesign (System.dc.html): primary (the accent fill),
- * secondary (raised panel), outline (panel with a border, for header
- * actions), ghost, danger (outlined, red label) and link. `destructive` is
- * the danger style under its shadcn name.
- */
+/** Shared Fluent-style controls retain the existing interaction and variant API. */
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-[13px] font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md border border-transparent text-sm font-semibold tracking-normal ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary font-semibold text-primary-foreground hover:bg-primary/90",
-        secondary: "border border-line bg-panel2 text-foreground hover:bg-raise",
-        outline: "border border-line bg-panel text-foreground hover:bg-raise",
-        ghost: "text-muted-foreground hover:bg-raise hover:text-foreground",
-        danger: "border border-line2 bg-panel text-bad hover:bg-bad-tint",
-        destructive: "border border-line2 bg-panel text-bad hover:bg-bad-tint",
+        default: "border-primary bg-primary text-primary-foreground hover:bg-primary/85",
+        danger: "border-destructive text-bad hover:bg-destructive/10",
+        destructive:
+          "border-destructive bg-destructive text-destructive-foreground hover:bg-destructive/85",
+        outline:
+          "border-input bg-transparent text-foreground hover:border-primary hover:bg-accent hover:text-accent-foreground",
+        secondary:
+          "border-border bg-secondary text-secondary-foreground hover:border-primary hover:bg-accent hover:text-accent-foreground",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-brand underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-3.5",
-        sm: "h-8 rounded-md px-3",
-        lg: "h-10 px-4 text-sm",
+        default: "min-h-9 px-4 py-1.5",
+        sm: "h-9 px-3",
+        lg: "h-10 px-6",
         icon: "h-9 w-9",
-        "icon-sm": "h-8 w-8 rounded-md",
+        "icon-sm": "h-8 w-8",
       },
     },
     defaultVariants: {
@@ -49,6 +47,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const Comp = asChild ? Slot : "button"
     return (
       <Comp
+        data-ui-button=""
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
         {...props}

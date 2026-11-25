@@ -1,3 +1,5 @@
+import { maintenanceEnabled, statusHtml } from "@/src/lib/status-pages";
+import { responseHeaders } from "@/src/lib/status-response";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import crypto from "node:crypto";
@@ -22,17 +24,18 @@ import { replicaRefusal, replicaRefusedResponse } from "@/ee/high-availability/r
  * request header, which is where the root layout reads the nonce from; this
  * overwrites any Content-Security-Policy header the client sent.
  */
-function withSecurityHeaders(req: NextRequest): NextResponse {
+function withSecurityHeaders(req: NextRequest, diagnosticHeaders: Headers, requestId: string): NextResponse {
   const nonce = crypto.randomBytes(16).toString("base64");
   const csp = buildCsp(nonce);
 
-  const requestHeaders = new Headers(req.headers);
+  const requestHeaders = new Headers(diagnosticHeaders);
   requestHeaders.set("Content-Security-Policy", csp);
 
   const response = NextResponse.next({
     request: { headers: requestHeaders },
   });
 
+  response.headers.set("X-Request-ID", requestId);
   response.headers.set("Content-Security-Policy", csp);
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("X-Frame-Options", "DENY");
@@ -43,6 +46,23 @@ function withSecurityHeaders(req: NextRequest): NextResponse {
 
 export default async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
+  const requestId = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  const diagnosticHeaders = new Headers(req.headers);
+  diagnosticHeaders.set("x-cpm-request-id", requestId);
+  diagnosticHeaders.set("x-cpm-request-time", timestamp);
+  diagnosticHeaders.set("x-cpm-request-path", pathname);
+
+  // Health probes stay available; APIs and server actions must also stop during maintenance.
+  if (maintenanceEnabled() && pathname !== "/api/health" && !(pathname === "/api/error-feedback" && req.method === "POST")) {
+    const headers = { ...responseHeaders(), "Retry-After": "300", "X-Request-ID": requestId };
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Service unavailable", code: "MAINTENANCE" }, {
+        status: 503, headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+    return new NextResponse(req.method === "HEAD" ? null : statusHtml("maintenance", "503", {requestId,timestamp,host:req.nextUrl.host,path:pathname,source:"app"}), { status: 503, headers });
+  }
 
   // A high availability standby (ee/docs/high-availability.md) answers the
   // health check and the request-path routes only; the dashboard and the API
@@ -77,6 +97,10 @@ export default async function middleware(req: NextRequest) {
   // pages as defense in depth. After a credential login the login page loads
   // the dashboard as a new document, which gets its own policy and nonce.
   if (
+    ((req.method === "GET" || req.method === "HEAD") &&
+      (pathname === "/fonts/barlow-condensed-bold.ttf" || pathname === "/fonts/ibm-plex-mono.ttf")) ||
+    pathname === "/api/error-feedback" ||
+    pathname === "/maintenance" ||
     pathname === "/login" ||
     pathname === "/portal" ||
     pathname.startsWith("/api/auth") ||
@@ -96,7 +120,7 @@ export default async function middleware(req: NextRequest) {
     pathname === "/api-portal" ||
     pathname.startsWith("/api-portal/")
   ) {
-    return withSecurityHeaders(req);
+    return withSecurityHeaders(req, diagnosticHeaders, requestId);
   }
 
   // Check authentication for protected routes
@@ -115,7 +139,7 @@ export default async function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL(MFA_SETUP_PATH, req.url));
   }
 
-  return withSecurityHeaders(req);
+  return withSecurityHeaders(req, diagnosticHeaders, requestId);
 }
 
 export const config = {
@@ -131,6 +155,6 @@ export const config = {
      *   analytics map silently breaks)
      * - public folder
      */
-    "/((?!_next/static|_next/image|favicon.ico|maplibre/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|maplibre/).*)",
   ],
 };

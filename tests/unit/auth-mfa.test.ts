@@ -158,7 +158,7 @@ describe('enrolment', () => {
 
     const enable = await b.post('/two-factor/enable', { password: PASSWORD, issuer: 'Evil Corp' });
     expect(enable.status).toBe(200);
-    expect(enable.body.totpURI).toMatch(/^otpauth:\/\/totp\/Ingressi:/);
+    expect(enable.body.totpURI).toMatch(/^otpauth:\/\/totp\/TOMORI:/);
     expect(enable.body.totpURI).not.toContain('Evil');
     expect(enable.body.backupCodes).toHaveLength(10);
     const secret = totpSecretFromUri(enable.body.totpURI);

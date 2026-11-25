@@ -242,7 +242,7 @@ export default function SignInSecurity({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="text-destructive"
+                  className="text-bad"
                   onClick={() => setDialog({ kind: "disable" })}
                   disabled={lastRequiredFactor("totp")}
                 >
@@ -285,7 +285,7 @@ export default function SignInSecurity({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="text-destructive"
+                        className="text-bad"
                         onClick={() => setDialog({ kind: "remove-passkey", passkey })}
                         disabled={lastRequiredFactor("passkey")}
                         aria-label={`Remove passkey ${passkey.name}`}

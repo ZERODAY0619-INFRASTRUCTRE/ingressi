@@ -51,7 +51,7 @@ export function KpiRow({ traffic, range }: { traffic: OverviewTraffic; range: Ov
         value={count(totals.mitigated)}
         color="var(--waf)"
         sparkline={sparklines.mitigated}
-        delta={{ text: ratePercent(fmt, totals.mitigatedShare), tone: "neutral" }}
+        delta={{ text: totals.requests > 0 ? ratePercent(fmt, totals.mitigatedShare) : "No ratio data", tone: "neutral" }}
         note={peakTime ? `of requests · peak at ${peakTime}` : "of requests"}
         href={href}
         className={tile}

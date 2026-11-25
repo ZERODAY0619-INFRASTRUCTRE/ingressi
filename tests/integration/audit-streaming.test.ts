@@ -106,7 +106,7 @@ describe('webhook delivery', () => {
     expect(request.headers['x-ingressi-signature']).toBe(expected);
     const { events } = JSON.parse(request.body);
     expect(events.map((event: { action: string }) => event.action)).toEqual(['after_0', 'after_1']);
-    expect(events[0]).toMatchObject({ entityType: 'proxy_host', source: 'ingressi' });
+    expect(events[0]).toMatchObject({ entityType: 'proxy_host', source: 'tomori' });
     expect(events[0].hash).toMatch(/^[0-9a-f]{64}$/);
     expect(events[1].prevHash).toBe(events[0].hash);
 
@@ -226,7 +226,7 @@ describe('Splunk HEC', () => {
     expect(received[0].headers.authorization).toBe('Splunk hec-token-123');
     const lines = received[0].body.split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toMatchObject({ sourcetype: 'ingressi:audit', index: 'audit', source: 'ingressi', event: { action: 'event_0' } });
+    expect(lines[0]).toMatchObject({ sourcetype: 'ingressi:audit', index: 'audit', source: 'tomori', event: { action: 'event_0' } });
     expect(typeof lines[0].time).toBe('number');
     expect((await sinkRow(sink.id)).consecutiveFailures).toBe(0);
   });
@@ -243,7 +243,7 @@ describe('syslog', () => {
   it('formats RFC 5424 with structured data and an ASCII JSON message', () => {
     const event = { ...testStreamEvent(4, new Date('2026-10-02T10:00:00.000Z'), 'node-1'), action: 'a"b]c', summary: 'Café ✓' };
     const message = formatSyslogMessage(event, { facility: 13 });
-    expect(message.startsWith(`<109>1 2026-10-02T10:00:00.000Z node-1 ingressi ${process.pid} audit [${SYSLOG_SD_ID} id="0" action="a\\"b\\]c" entityType="audit_sink" entityId="4"] {`)).toBe(true);
+    expect(message.startsWith(`<109>1 2026-10-02T10:00:00.000Z node-1 tomori ${process.pid} audit [${SYSLOG_SD_ID} id="0" action="a\\"b\\]c" entityType="audit_sink" entityId="4"] {`)).toBe(true);
     expect(/^[\x20-\x7e]*$/.test(message)).toBe(true);
     const json = JSON.parse(message.slice(message.indexOf('] {') + 2));
     expect(json.summary).toBe('Café ✓');
@@ -260,7 +260,7 @@ describe('syslog', () => {
       await seed(2);
       expect(await runAuditStreamingTick()).toMatchObject({ delivered: 2, failed: 0 });
       await vi.waitFor(() => expect(messages).toHaveLength(2));
-      expect(messages[0]).toMatch(/^<109>1 \S+ \S+ ingressi \d+ audit \[ingressi@32473 id="\d+" action="event_0"/);
+      expect(messages[0]).toMatch(/^<109>1 \S+ \S+ tomori \d+ audit \[tomori@32473 id="\d+" action="event_0"/);
     } finally {
       socket.close();
     }

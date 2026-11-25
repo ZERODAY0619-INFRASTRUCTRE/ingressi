@@ -1,3 +1,9 @@
+import { syncAnubisRuntime } from "./anubis-runtime";
+import { caddyStatusRoute, defaultErrorRoutes, feedbackProxyRoute } from "./caddy-status";
+import { maintenanceEnabled, upstreamErrorResponses } from "./status-pages";
+import { getAnubisStatus } from "./anubis-settings";
+import { buildAnubisGate } from "./caddy-anubis";
+import { buildAuthentikUpstream } from "./caddy-authentik";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { Resolver } from "node:dns/promises";
 import { join, dirname } from "node:path";
@@ -14,8 +20,6 @@ import {
   parseUpstreamTarget,
   toDurationMs,
   escapeHostPlaceholders,
-  authentikOutpostDial,
-  authentikAuthDial,
   forwardAuthDial,
 } from "./caddy-utils";
 import {
@@ -1250,6 +1254,7 @@ export function buildLocationReverseProxy(
   const reverseProxyHandler: Record<string, unknown> = {
     handler: "reverse_proxy",
     upstreams: parsedTargets.map((t) => ({ dial: t.dial })),
+    handle_response: upstreamErrorResponses(),
   };
 
   if (preserveHostHeader) {
@@ -1594,6 +1599,14 @@ async function buildProxyRoutes(
             ? { handler: "subroute", routes: [{ match: [{ not: [bypass] }], handle: [basicAuth] }] }
             : basicAuth
         );
+      } else {
+        // An assigned but empty access list is a revoked policy, not a public route.
+        // Fail closed before the backend handler can run.
+        handlers.push({
+          handler: "static_response",
+          status_code: 403,
+          body: "Access denied"
+        });
       }
     }
 
@@ -1618,21 +1631,16 @@ async function buildProxyRoutes(
 
     const reverseProxyHandler: Record<string, unknown> = {
       handler: "reverse_proxy",
-      upstreams: resolvedUpstreams.upstreams
+      upstreams: resolvedUpstreams.upstreams,
+      handle_response: upstreamErrorResponses(),
     };
 
     // Authentik outpost handler will be added later after protected paths
     let outpostRoute: CaddyHttpRoute | null = null;
     if (authentik) {
-      const outpostDial = authentikOutpostDial(authentik.outpostUpstream);
-
       const outpostHandler: Record<string, unknown> = {
         handler: "reverse_proxy",
-        upstreams: [
-          {
-            dial: outpostDial
-          }
-        ]
+        ...buildAuthentikUpstream(authentik.outpostUpstream),
       };
 
       if (authentik.setOutpostHostHeader) {
@@ -1777,15 +1785,9 @@ async function buildProxyRoutes(
         ? ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "fd00::/8", "::1/128"]
         : authentik.trustedProxies;
 
-      const dialAddress = authentikAuthDial(authentik.outpostUpstream);
-
       const forwardAuthHandler: Record<string, unknown> = {
         handler: "reverse_proxy",
-        upstreams: [
-          {
-            dial: dialAddress
-          }
-        ],
+        ...buildAuthentikUpstream(authentik.outpostUpstream),
         rewrite: {
           method: "GET",
           uri: authentik.authEndpoint
@@ -3448,12 +3450,22 @@ async function buildCaddyDocumentFromDatabase() {
   // unmatched-request behavior and must remain last so it cannot shadow any
   // managed proxy host.
   const defaultResponseRoute = buildDefaultResponseRoute(defaultResponseSettings);
-  const hostRoutesWithDefault = defaultResponseRoute ? [...httpRoutes, defaultResponseRoute] : httpRoutes;
+  const anubis = await getAnubisStatus();
+  const anubisGate = buildAnubisGate(anubis.domain ?? undefined, {
+    enabled: anubis.enabled,
+    hosts: proxyHostRows.map(row => ({
+      enabled: Boolean(row.enabled),
+      domains: parseJson<string[]>(row.domains, []),
+      anubisEnabled: parseJson<{ anubis_enabled?: boolean }>(row.meta, {}).anubis_enabled !== false,
+    })),
+  });
+  const gatedRoutes = [...(anubisGate?.routes ?? []), ...httpRoutes];
+  const hostRoutesWithDefault = defaultResponseRoute ? [...gatedRoutes, defaultResponseRoute] : gatedRoutes;
   // The global Blocked sources list runs before anything else, on every
   // request the server takes (it has no host matcher and is not terminal:
   // whoever it does not deny goes on to the routes below).
   const blockedSourcesRoutes =
-    accessListConfig.blockedSourcesRoute && hostRoutesWithDefault.length > 0
+    accessListConfig.blockedSourcesRoute
       ? [accessListConfig.blockedSourcesRoute, ...hostRoutesWithDefault]
       : hostRoutesWithDefault;
   // Response headers for every response wrap everything after them, the
@@ -3461,7 +3473,7 @@ async function buildCaddyDocumentFromDatabase() {
   // start a server on their own.
   const responseHeadersRoute = buildResponseHeadersRoute(await getResponseHeadersSettings());
   const mainRoutes =
-    responseHeadersRoute && blockedSourcesRoutes.length > 0 ? [responseHeadersRoute, ...blockedSourcesRoutes] : blockedSourcesRoutes;
+    responseHeadersRoute ? [responseHeadersRoute, ...blockedSourcesRoutes] : blockedSourcesRoutes;
 
   // Server-level error routes (Caddy handle_errors): per-host rules first so they
   // take precedence, then global rules act as a fallback for any unmatched host/status.
@@ -3486,7 +3498,20 @@ async function buildCaddyDocumentFromDatabase() {
     ...(hasRateLimits && loggingEnabled ? [buildRateLimitLogRoute()] : []),
     ...hostErrorRoutes,
     ...globalErrorRoutes,
+    ...defaultErrorRoutes(),
   ];
+  if (!defaultResponseRoute) mainRoutes.push(caddyStatusRoute(404, "notFound"));
+  const customRoutes: CaddyHttpRoute[] = [{handle:[
+    {handler:"log_append", key:"request_id", value:"{http.request.uuid}"},
+    {handler:"headers", response:{set:{"X-Request-ID":["{http.request.uuid}"]}}},
+  ]}];
+  const feedback = feedbackProxyRoute(process.env.CPM_FEEDBACK_UPSTREAM);
+  if (feedback) customRoutes.push(feedback);
+  if (maintenanceEnabled()) customRoutes.push(caddyStatusRoute(503, "maintenance"));
+  // Global response headers and source denials must also cover custom endpoints.
+  const customRouteIndex = (responseHeadersRoute ? 1 : 0)
+    + (accessListConfig.blockedSourcesRoute ? 1 : 0);
+  mainRoutes.splice(customRouteIndex, 0, ...customRoutes);
 
   const hasTls = tlsConnectionPolicies.length > 0;
 
@@ -3496,6 +3521,7 @@ async function buildCaddyDocumentFromDatabase() {
   const metricsPort = metricsSettings?.port ?? 9090;
 
   const servers: Record<string, unknown> = {};
+  if (anubisGate) servers.anubis_success = anubisGate.successServer;
 
   // Server-level trusted proxies / client-IP headers. Caddy resolves client_ip
   // in core before any handler, so this is the only place a global list fixes
@@ -3971,6 +3997,7 @@ async function applyCaddyConfigNow() {
     }
   }
 
+  await syncAnubisRuntime();
   try {
     await syncInstances();
   } catch (error) {

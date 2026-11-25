@@ -101,7 +101,7 @@ export function WafExclusionPathField({
         />
       )}
       {error ? (
-        <p id={errorId} role="alert" className="m-0 text-xs text-destructive">
+        <p id={errorId} role="alert" className="m-0 text-xs text-bad">
           {error}
         </p>
       ) : (

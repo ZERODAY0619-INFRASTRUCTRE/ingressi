@@ -380,10 +380,11 @@ describe('generated configuration', () => {
     expect(errors[1].handle[0].body).toBe('Slow down');
   });
 
-  it('adds no error route without access logging, where nothing would read the field', async () => {
+  it('omits rate-limit log enrichment without access logging while retaining custom error pages', async () => {
     await host('app', { rateLimit: { rules: [ipRule] } });
     const doc = await buildCaddyDocument();
-    expect(server(doc)).not.toHaveProperty('errors');
+    expect(JSON.stringify(server(doc).errors)).not.toContain('rate_limit_zone');
+    expect(server(doc)).toHaveProperty('errors');
     expect(server(doc)).toHaveProperty('named_routes');
   });
 });

@@ -356,7 +356,7 @@ function NavContent({
         {groups.map((group) => (
           <div key={group.title ?? "start"} role="group" aria-label={group.title ?? undefined} className="flex flex-col gap-0.5">
             {group.title && (
-              <div aria-hidden="true" className="px-2.5 pb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-soft">{group.title}</div>
+              <div aria-hidden="true" className="px-2.5 pb-1 text-[11px] font-semibold tracking-normal text-soft">{group.title}</div>
             )}
             {group.entries.map((entry) => (
               <Fragment key={entry.key}>
@@ -458,8 +458,8 @@ function Shell({
   const title = currentLabel(pathname, user, summary) || branding.productName;
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-62 flex-col border-r border-line bg-panel md:flex">
+    <div className="flex min-h-screen bg-ground">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-62 flex-col border-r border-line bg-panel2 md:flex">
         <NavContent
           pathname={pathname}
           user={user}
@@ -497,7 +497,7 @@ function Shell({
 
       {/* overflow-x: clip, not hidden: hidden would make main a scroll container and break position: sticky inside pages. */}
       <main className="mt-14 min-w-0 flex-1 overflow-x-clip pb-24 md:ml-62 md:mt-0 md:pb-0">
-        <div className="mx-auto max-w-[1600px] px-4 py-4 md:px-8 md:pt-6 md:pb-14">{children}</div>
+        <div className="mx-auto max-w-[1600px] px-4 py-6 md:px-10 md:pt-8 md:pb-14">{children}</div>
       </main>
 
       <BottomNav user={user} summary={summary} pathname={pathname} onMore={() => setMobileOpen(true)} />

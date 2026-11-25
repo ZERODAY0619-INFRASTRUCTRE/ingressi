@@ -44,7 +44,7 @@ export function PageHeader({ title, description, breadcrumb, count, actions, act
   const hasActions = Boolean(actions) || Boolean(action);
   const showCount = count !== undefined && count !== null && count !== "";
   return (
-    <header className={cn("mb-6 flex flex-col gap-3.5", className)}>
+    <header className={cn("mb-7 flex flex-col gap-4", className)}>
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex min-w-0 flex-[1_1_280px] flex-col gap-1">
           {breadcrumb && breadcrumb.length > 0 && (

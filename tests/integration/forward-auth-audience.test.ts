@@ -108,6 +108,7 @@ function proxyHeaders(origin: string, proof = getForwardAuthProxyProof(), proxyH
   const target = new URL(origin);
   return {
     'x-forwarded-proto': target.protocol.slice(0, -1),
+    cookie: `_cpm_fa_nonce=${browserNonce}`,
     'x-forwarded-host': target.host,
     [FORWARD_AUTH_PROXY_PROOF_HEADER]: proof,
     ...(proxyHostId !== undefined ? { [FORWARD_AUTH_PROXY_HOST_ID_HEADER]: String(proxyHostId) } : {}),
@@ -232,15 +233,23 @@ describe('forward-auth exact audience binding', () => {
   });
 });
 
+const browserNonce = 'a'.repeat(64);
+function browserHeaders(origin: string): Headers {
+  const headers = new Headers(proxyHeaders(origin));
+  headers.set('cookie', `_cpm_fa_nonce=${browserNonce}`);
+  return headers;
+}
+
 describe('trusted Caddy callback boundary', () => {
   it('rejects direct-origin requests even when forwarded host/protocol are forged', async () => {
     const { user } = await setupAuthorizedWildcard();
     const { rawCode } = await createCode(user.id, 'https://private.example.com/');
 
-    const directRequest = new NextRequest(`http://localhost:3000/api/forward-auth/callback?code=${rawCode}`, {
+    const directRequest = new NextRequest(`http://localhost:3000/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: {
         'x-forwarded-proto': 'https',
         'x-forwarded-host': 'private.example.com',
+        cookie: `_cpm_fa_nonce=${browserNonce}`,
       },
     });
     const response = await forwardAuthCallback(directRequest);
@@ -255,12 +264,12 @@ describe('trusted Caddy callback boundary', () => {
     const target = 'https://private.example.com/dashboard';
     const { rawCode } = await createCode(user.id, target);
 
-    const attackerRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
+    const attackerRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: proxyHeaders('https://evil.example.com', undefined, host.id),
     });
     expect((await forwardAuthCallback(attackerRequest)).status).toBe(401);
 
-    const legitimateRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
+    const legitimateRequest = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: proxyHeaders('https://private.example.com', undefined, host.id),
     });
     const response = await forwardAuthCallback(legitimateRequest);
@@ -343,12 +352,12 @@ describe('forwarded host must match the route Caddy chose', () => {
     const { rawCode } = await createCode(user.id, target);
 
     // Routed through the wildcard host's Caddy route, but claiming the exact host.
-    const crossRouted = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
+    const crossRouted = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: proxyHeaders('https://app.example.com', undefined, wildcard.id),
     });
     expect((await forwardAuthCallback(crossRouted)).status).toBe(401);
 
-    const unpinned = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
+    const unpinned = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: proxyHeaders('https://app.example.com'),
     });
     expect((await forwardAuthCallback(unpinned)).status).toBe(401);
@@ -356,7 +365,7 @@ describe('forwarded host must match the route Caddy chose', () => {
     const [exchange] = await ctx.db.select().from(schema.forwardAuthExchanges);
     expect(exchange.used).toBe(false);
 
-    const legitimate = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
+    const legitimate = new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
       headers: proxyHeaders('https://app.example.com', undefined, exact.id),
     });
     expect((await forwardAuthCallback(legitimate)).status).toBe(302);
@@ -600,8 +609,8 @@ describe('names from before the rename to Ingressi', () => {
   it('replaces an old-name session cookie on sign-in', async () => {
     const { user, host } = await setupAuthorizedWildcard();
     const { rawCode } = await createCode(user.id, 'https://private.example.com/');
-    const response = await forwardAuthCallback(new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}`, {
-      headers: { ...proxyHeaders('https://private.example.com', undefined, host.id), cookie: '_cpm_fa=stale' },
+    const response = await forwardAuthCallback(new NextRequest(`http://localhost/api/forward-auth/callback?code=${rawCode}&nonce=${browserNonce}`, {
+      headers: { ...proxyHeaders('https://private.example.com', undefined, host.id), cookie: `_cpm_fa=stale; _cpm_fa_nonce=${browserNonce}` },
     }));
     expect(response.status).toBe(302);
     const cookies = response.headers.getSetCookie();

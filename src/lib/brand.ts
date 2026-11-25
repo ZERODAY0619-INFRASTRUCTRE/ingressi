@@ -4,9 +4,9 @@
  * not derived from this; their pre-rename spellings that existing installs
  * depend on are listed in documentation/upgrading-to-ingressi.md.
  */
-export const BRAND_NAME = "Ingressi";
+export const BRAND_NAME = "TOMORI";
 
-export const BRAND_TAGLINE = "Self-hosted reverse proxy built on Caddy";
+export const BRAND_TAGLINE = "Traffic Orchestration, Management, Observability & Routing Infrastructure";
 
 /** Shown where users of the old name need to recognise the product. */
 export const BRAND_FORMER_NAME = "Caddy Proxy Manager";

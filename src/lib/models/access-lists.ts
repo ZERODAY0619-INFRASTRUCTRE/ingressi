@@ -675,6 +675,16 @@ export async function addAccessListEntry(
 export async function removeAccessListEntry(accessListId: number, entryId: number, actorUserId: number) {
   const list = await requireListRow(accessListId);
 
+  const remaining = await appDb.query.accessListEntries.findFirst({
+    where: (table, operators) => operators.and(
+      operators.eq(table.accessListId, accessListId),
+      operators.ne(table.id, entryId)
+    )
+  });
+  if (!remaining) {
+    throw new Error("An access list assigned to a host must retain at least one account");
+  }
+
   // Only an entry of this list: the list is what the caller was checked against.
   await appDb
     .delete(accessListEntries)

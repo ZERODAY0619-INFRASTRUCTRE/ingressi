@@ -110,7 +110,7 @@ function RuleEditFields({ rule, onChange }: { rule: DraftRule; onChange: (rule: 
           aria-describedby={`${idBase}-values-hint`}
           aria-invalid={parsed.errors.length > 0}
         />
-        <span id={`${idBase}-values-hint`} className={cn("text-xs", parsed.errors.length > 0 ? "text-destructive" : "text-muted-foreground")}>
+        <span id={`${idBase}-values-hint`} className={cn("text-xs", parsed.errors.length > 0 ? "text-bad" : "text-muted-foreground")}>
           {parsed.errors.length > 0 ? parsed.errors[0] : option.hint}
         </span>
         {(rule.kind === "country" || rule.kind === "continent") && parsed.values.length > 0 && (

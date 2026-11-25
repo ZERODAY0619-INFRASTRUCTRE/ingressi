@@ -418,7 +418,7 @@ function SearchFilter({ dimensions, onAdd, onSearch }: { dimensions: readonly Fi
         />
       </label>
       {showList && (
-        <ul id={listId} role="listbox" aria-label="Filters to add" className="absolute left-0 top-full z-50 m-0 mt-1 max-h-80 w-full min-w-[320px] list-none overflow-y-auto rounded-lg border border-line2 bg-panel p-1 shadow-overlay">
+        <ul id={listId} role="listbox" aria-label="Filters to add" className="absolute left-0 top-full z-50 m-0 mt-1 max-h-80 w-full min-w-0 max-w-[calc(100vw-2rem)] list-none overflow-y-auto rounded-lg border border-line2 bg-panel p-1 shadow-overlay">
           {choices.map((choice, i) => (
             <li
               key={choice.key}
