@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DNS_PROVIDERS,
@@ -7,6 +9,7 @@ import {
   encryptProviderCredentials,
   getProviderDefinition,
   isValidDnsDuration,
+  normalizeProviderCredentials,
   redactDnsProviderSettingsForApi,
   redactLegacyCloudflareSettingsForApi,
 } from "@/src/lib/dns-providers";
@@ -131,6 +134,56 @@ describe("DNS provider registry", () => {
         api_key: "spaceship-key",
         api_secret: "spaceship-secret",
       },
+      resolvers: ["1.1.1.1"],
+    });
+  });
+
+  it("registers PowerDNS with the Caddy module path and server URL, API key and server ID fields", () => {
+    const provider = getProviderDefinition("powerdns");
+
+    expect(provider).toMatchObject({
+      name: "powerdns",
+      displayName: "PowerDNS",
+      docsUrl: "https://github.com/caddy-dns/powerdns",
+      modulePath: "github.com/caddy-dns/powerdns",
+    });
+    expect(provider?.fields).toEqual([
+      {
+        key: "server_url",
+        label: "Server URL",
+        type: "string",
+        required: true,
+        placeholder: "https://powerdns.example.net:8081",
+        description: "Base URL of the PowerDNS API (webserver with api=yes)",
+      },
+      { key: "api_token", label: "API Key", type: "password", required: true },
+      {
+        key: "server_id",
+        label: "Server ID",
+        type: "string",
+        required: false,
+        placeholder: "localhost",
+        description: "Defaults to localhost",
+      },
+      ...challengeOptionFields(),
+    ]);
+    expect(DNS_PROVIDERS.map((p) => p.name)).toContain("powerdns");
+  });
+
+  it("encrypts only the API key and emits PowerDNS credentials for Caddy DNS challenges", () => {
+    const credentials = {
+      server_url: "https://powerdns.example.net:8081",
+      api_token: "powerdns-key",
+      server_id: "localhost",
+    };
+    const encrypted = encryptProviderCredentials("powerdns", credentials);
+
+    expect(isEncryptedSecret(encrypted.api_token)).toBe(true);
+    expect(encrypted.server_url).toBe(credentials.server_url);
+    expect(encrypted.server_id).toBe(credentials.server_id);
+    expect(decryptProviderCredentials("powerdns", encrypted)).toEqual(credentials);
+    expect(buildDnsChallengeConfig("powerdns", encrypted, ["1.1.1.1"])).toEqual({
+      provider: { name: "powerdns", ...credentials },
       resolvers: ["1.1.1.1"],
     });
   });
@@ -564,5 +617,55 @@ describe("DNS provider registry", () => {
     expect(isValidDnsDuration("600")).toBe(false);
     expect(isValidDnsDuration("900 sec")).toBe(false);
     expect(isValidDnsDuration("soon")).toBe(false);
+  });
+  it("keeps the Caddy module field fixture in sync with the registry", () => {
+    // docker/caddy/dns_providers_test.go decodes these keys into the bundled
+    // Caddy modules; regenerate the fixture when a provider field changes.
+    const fixture = JSON.parse(
+      readFileSync(join(process.cwd(), "docker/caddy/testdata/dns-provider-fields.json"), "utf8")
+    );
+    const challengeKeys = challengeOptionFields().map((field) => field.key);
+    const registry = Object.fromEntries(
+      DNS_PROVIDERS.map((provider) => [
+        provider.name,
+        provider.fields.map((field) => field.key).filter((key) => !challengeKeys.includes(key)),
+      ])
+    );
+    expect(fixture).toEqual(registry);
+  });
+
+  it("sends the DigitalOcean token as auth_token", () => {
+    const encrypted = encryptProviderCredentials("digitalocean", { auth_token: "do-token" });
+
+    expect(isEncryptedSecret(encrypted.auth_token)).toBe(true);
+    expect(buildDnsChallengeConfig("digitalocean", encrypted, [])).toEqual({
+      provider: { name: "digitalocean", auth_token: "do-token" },
+    });
+  });
+
+  it("renames a DigitalOcean token stored as api_token by older releases", () => {
+    const stored = encryptProviderCredentials("digitalocean", { auth_token: "do-token" });
+    const legacy = { api_token: stored.auth_token, propagation_delay: "60s" };
+
+    expect(normalizeProviderCredentials("digitalocean", legacy)).toEqual({
+      auth_token: stored.auth_token,
+      propagation_delay: "60s",
+    });
+    expect(normalizeProviderCredentials("digitalocean", { api_token: "old", auth_token: "new" })).toEqual({
+      auth_token: "new",
+    });
+    expect(buildDnsChallengeConfig("digitalocean", legacy, [])).toEqual({
+      provider: { name: "digitalocean", auth_token: "do-token" },
+      propagation_delay: "60s",
+    });
+  });
+
+  it("sends the Hetzner Cloud API token as api_token for the v2 module", () => {
+    expect(getProviderDefinition("hetzner")?.modulePath).toBe("github.com/caddy-dns/hetzner/v2");
+    const encrypted = encryptProviderCredentials("hetzner", { api_token: "hcloud-token" });
+
+    expect(buildDnsChallengeConfig("hetzner", encrypted, [])).toEqual({
+      provider: { name: "hetzner", api_token: "hcloud-token" },
+    });
   });
 });

@@ -12,7 +12,7 @@ require (
 	github.com/caddy-dns/duckdns v0.5.0
 	github.com/caddy-dns/dynu v1.0.0
 	github.com/caddy-dns/godaddy v1.2.0
-	github.com/caddy-dns/hetzner v1.0.0
+	github.com/caddy-dns/hetzner/v2 v2.0.1
 	github.com/caddy-dns/infomaniak v1.0.2
 	github.com/caddy-dns/inwx v0.4.1
 	github.com/caddy-dns/ionos v1.3.0
@@ -22,11 +22,12 @@ require (
 	github.com/caddy-dns/njalla v1.0.0
 	github.com/caddy-dns/ovh v1.1.0
 	github.com/caddy-dns/porkbun v0.3.1
+	github.com/caddy-dns/powerdns v1.0.2
 	github.com/caddy-dns/rfc2136 v1.0.0
 	github.com/caddy-dns/route53 v1.6.2
 	github.com/caddy-dns/spaceship v1.0.0
 	github.com/caddy-dns/vultr v0.0.0-20250723121531-55bf3e9768be
-	github.com/caddyserver/caddy/v2 v2.11.7
+	github.com/caddyserver/caddy/v2 v2.11.9
 	github.com/corazawaf/coraza-caddy/v2 v2.6.2
 	github.com/fuomag9/caddy-blocker-plugin v0.0.0-20260728192246-a1ff7050deb7
 	github.com/mholt/caddy-l4 v0.1.2
@@ -97,7 +98,7 @@ require (
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-resty/resty/v2 v2.16.5 // indirect
@@ -117,6 +118,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
+	github.com/hetznercloud/hcloud-go/v2 v2.37.0 // indirect
 	github.com/huandu/xstrings v1.6.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -138,7 +140,7 @@ require (
 	github.com/libdns/duckdns v0.3.0 // indirect
 	github.com/libdns/dynu v1.0.0 // indirect
 	github.com/libdns/godaddy v1.1.0 // indirect
-	github.com/libdns/hetzner v1.0.0 // indirect
+	github.com/libdns/hetzner/v2 v2.0.1 // indirect
 	github.com/libdns/infomaniak v0.2.0 // indirect
 	github.com/libdns/inwx v0.3.1 // indirect
 	github.com/libdns/ionos v1.3.0 // indirect
@@ -149,6 +151,7 @@ require (
 	github.com/libdns/njalla v1.0.0 // indirect
 	github.com/libdns/ovh v1.1.0 // indirect
 	github.com/libdns/porkbun v1.0.1 // indirect
+	github.com/libdns/powerdns v0.1.4 // indirect
 	github.com/libdns/rfc2136 v1.0.0 // indirect
 	github.com/libdns/route53 v1.6.2 // indirect
 	github.com/libdns/spaceship v1.0.0 // indirect
@@ -164,6 +167,7 @@ require (
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
+	github.com/mittwald/go-powerdns v0.6.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nlnwa/whatwg-url v0.6.2 // indirect
 	github.com/oschwald/geoip2-golang v1.13.0 // indirect
@@ -239,7 +243,7 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/crypto/x509roots/fallback v0.0.0-20260929172509-b39ff6d641ec // indirect
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261030153154-30a33513ff6d // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
